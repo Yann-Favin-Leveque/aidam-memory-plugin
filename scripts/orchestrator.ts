@@ -655,27 +655,26 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
             }
           }
         } catch {
-          // Skip malformed lines
+          // Skip malformed lines (progress entries, etc.)
         }
         byteOffset += lineBytes;
       }
 
-      // 2. Take the LAST 40k tokens (~240k bytes) of conversation
-      //    This gives the Compactor a 40k context window even though it fires every 20k
-      const contextWindowTokens = 40000;
-      const contextWindowBytes = contextWindowTokens * 6;
-      const totalBytes = rawContent.length;
-      const startByte = Math.max(0, totalBytes - contextWindowBytes);
+      log(`Compactor: ${lines.length} lines, ${allChunks.length} conversation chunks`);
 
-      const conversationChunks: string[] = [];
-      let charsCollected = 0;
+      // 2. Take the LAST ~30k chars of conversation chunks (not raw file bytes)
+      //    The sliding window applies to extracted conversation content, not raw JSONL
+      //    (because JSONL is dominated by tool progress entries, not conversation)
       const maxChars = 30000; // ~7.5k tokens max to send to agent
 
-      for (const chunk of allChunks) {
-        if (chunk.byteOffset < startByte) continue;
-        if (charsCollected >= maxChars) break;
-        conversationChunks.push(chunk.text);
-        charsCollected += chunk.text.length;
+      // Work backwards from the end to collect up to maxChars
+      const conversationChunks: string[] = [];
+      let charsCollected = 0;
+
+      for (let i = allChunks.length - 1; i >= 0; i--) {
+        if (charsCollected + allChunks[i].text.length > maxChars) break;
+        conversationChunks.unshift(allChunks[i].text);
+        charsCollected += allChunks[i].text.length;
       }
 
       if (conversationChunks.length === 0) {
@@ -892,6 +891,17 @@ async function main(): Promise<void> {
   };
 
   log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}`);
+  if (config.transcriptPath) {
+    log(`Transcript path: ${config.transcriptPath}`);
+    try {
+      const stat = fs.statSync(config.transcriptPath);
+      log(`Transcript exists: ${stat.size} bytes`);
+    } catch (err: any) {
+      log(`Transcript NOT accessible: ${err.message}`);
+    }
+  } else {
+    log(`WARNING: No transcript path provided!`);
+  }
 
   const orchestrator = new Orchestrator(config);
 
