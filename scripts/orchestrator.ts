@@ -21,12 +21,18 @@ interface OrchestratorConfig {
   cwd: string;
   retrieverEnabled: boolean;
   learnerEnabled: boolean;
+  compactorEnabled: boolean;
   pollIntervalMs: number;
   heartbeatIntervalMs: number;
+  compactorCheckIntervalMs: number;
+  compactorTokenThreshold: number;
   retrieverModel: string;
   learnerModel: string;
+  compactorModel: string;
   mcpServerScript: string;
   pythonPath: string;
+  transcriptPath: string;
+  projectSlug: string;
 }
 
 interface CognitiveMessage {
@@ -99,12 +105,17 @@ class Orchestrator {
   private db: Client;
   private retrieverSessionId: string | undefined;
   private learnerSessionId: string | undefined;
+  private compactorSessionId: string | undefined;
   private running: boolean = false;
   private slidingWindow: SlidingWindow;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private compactorTimer: ReturnType<typeof setInterval> | undefined;
   private retrieverBusy: boolean = false;
   private learnerBusy: boolean = false;
+  private compactorBusy: boolean = false;
+  private lastCompactedSize: number = 0;
+  private compactorVersion: number = 0;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -135,6 +146,9 @@ class Orchestrator {
     if (this.config.learnerEnabled) {
       initPromises.push(this.initLearner());
     }
+    if (this.config.compactorEnabled) {
+      initPromises.push(this.initCompactor());
+    }
     await Promise.all(initPromises);
 
     // Mark as running
@@ -149,6 +163,9 @@ class Orchestrator {
     this.running = true;
     this.startPolling();
     this.startHeartbeat();
+    if (this.config.compactorEnabled) {
+      this.startCompactorMonitor();
+    }
 
     // Graceful shutdown handlers
     process.on("SIGTERM", () => this.shutdown());
@@ -158,7 +175,7 @@ class Orchestrator {
       this.shutdown();
     });
 
-    log(`Orchestrator running. Retriever: ${this.retrieverSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}`);
+    log(`Orchestrator running. Retriever: ${this.retrieverSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}, Compactor: ${this.compactorSessionId || "disabled"}`);
   }
 
   private getMcpConfig() {
@@ -522,6 +539,238 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
   }
 
   // ============================================
+  // COMPACTOR
+  // ============================================
+
+  private async initCompactor(): Promise<void> {
+    log("Initializing Compactor session...");
+    const promptPath = path.join(__dirname, "..", "prompts", "compactor_system.md");
+    let systemPrompt: string;
+    try {
+      systemPrompt = fs.readFileSync(promptPath, "utf-8");
+    } catch {
+      systemPrompt = "You are a session state compactor. Summarize conversation context into a structured document with sections: IDENTITY, TASK TREE, KEY DECISIONS, WORKING CONTEXT, CONVERSATION DYNAMICS.";
+    }
+
+    try {
+      const response = query({
+        prompt: systemPrompt + "\n\n[INIT] Compactor session initialized. Waiting for conversation chunks. Respond with READY.",
+        options: {
+          model: this.config.compactorModel,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 1,
+          maxBudgetUsd: 0.05,
+          maxThinkingTokens: 1024,
+          cwd: this.config.cwd,
+          persistSession: true,
+        },
+      });
+
+      for await (const msg of response) {
+        if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
+          this.compactorSessionId = msg.session_id;
+          log(`Compactor session ID: ${this.compactorSessionId}`);
+        }
+      }
+    } catch (err: any) {
+      log(`Compactor init error: ${err.message}`);
+    }
+  }
+
+  private startCompactorMonitor(): void {
+    // Check transcript size periodically
+    this.compactorTimer = setInterval(async () => {
+      if (!this.running || this.compactorBusy || !this.compactorSessionId) return;
+      try {
+        await this.checkAndRunCompactor();
+      } catch (err: any) {
+        log(`Compactor monitor error: ${err.message}`);
+      }
+    }, this.config.compactorCheckIntervalMs);
+  }
+
+  private async checkAndRunCompactor(): Promise<void> {
+    const transcriptPath = this.config.transcriptPath;
+    if (!transcriptPath) {
+      log("Compactor check: no transcript path configured");
+      return;
+    }
+
+    let fileSize: number;
+    try {
+      const stat = fs.statSync(transcriptPath);
+      fileSize = stat.size;
+    } catch (err: any) {
+      log(`Compactor check: transcript not accessible: ${err.message}`);
+      return;
+    }
+
+    const estimatedTokens = Math.floor(fileSize / 6);
+    const tokensSinceLastCompact = estimatedTokens - this.lastCompactedSize;
+
+    if (tokensSinceLastCompact < this.config.compactorTokenThreshold) return;
+
+    log(`Compactor triggered: ~${estimatedTokens} tokens total, ~${tokensSinceLastCompact} since last compact`);
+    await this.runCompactor(transcriptPath, estimatedTokens);
+  }
+
+  private async runCompactor(transcriptPath: string, currentTokenEstimate: number): Promise<void> {
+    if (!this.compactorSessionId) return;
+    this.compactorBusy = true;
+
+    try {
+      // 1. Read only NEW messages since last compaction (not the whole transcript)
+      const rawContent = fs.readFileSync(transcriptPath, "utf-8");
+      const lines = rawContent.split("\n").filter((l) => l.trim());
+
+      // Calculate how many lines to skip (based on lastCompactedSize)
+      // We only need messages since the last compaction point
+      const startFromByte = this.lastCompactedSize * 6; // rough byte estimate from token count
+      let bytesSeen = 0;
+      let startLine = 0;
+
+      if (this.lastCompactedSize > 0) {
+        // Find the approximate starting line based on bytes consumed
+        for (let i = 0; i < lines.length; i++) {
+          bytesSeen += lines[i].length + 1;
+          if (bytesSeen >= startFromByte) {
+            startLine = i;
+            break;
+          }
+        }
+      }
+
+      // Extract user and assistant messages from startLine onwards
+      const conversationChunks: string[] = [];
+      let charsCollected = 0;
+      const maxChars = 40000; // ~10k tokens max to send to agent
+
+      for (let i = startLine; i < lines.length && charsCollected < maxChars; i++) {
+        try {
+          const entry = JSON.parse(lines[i]);
+          if (entry.type === "user" && entry.message?.content) {
+            const content = typeof entry.message.content === "string"
+              ? entry.message.content
+              : JSON.stringify(entry.message.content);
+            conversationChunks.push(`[USER] ${content.slice(0, 3000)}`);
+            charsCollected += content.length;
+          } else if (entry.type === "assistant" && entry.message?.content) {
+            const blocks = entry.message.content;
+            if (Array.isArray(blocks)) {
+              const text = blocks
+                .filter((b: any) => b.type === "text")
+                .map((b: any) => b.text)
+                .join("\n");
+              if (text) {
+                conversationChunks.push(`[CLAUDE] ${text.slice(0, 3000)}`);
+                charsCollected += text.length;
+              }
+            }
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      if (conversationChunks.length === 0) {
+        log("Compactor: no conversation content found");
+        this.compactorBusy = false;
+        return;
+      }
+
+      // 2. Get previous state from DB
+      const prevResult = await this.db.query(
+        `SELECT state_text, version FROM session_state
+         WHERE session_id = $1
+         ORDER BY version DESC LIMIT 1`,
+        [this.config.sessionId]
+      );
+
+      const previousState = prevResult.rows.length > 0 ? prevResult.rows[0].state_text : "";
+      const previousVersion = prevResult.rows.length > 0 ? prevResult.rows[0].version : 0;
+      this.compactorVersion = previousVersion + 1;
+
+      // 3. Build prompt for Compactor
+      const compactorPrompt = previousState
+        ? `[UPDATE REQUEST - Version ${this.compactorVersion}]
+
+[PREVIOUS STATE]
+${previousState}
+
+[NEW CONVERSATION SINCE LAST UPDATE]
+${conversationChunks.join("\n\n")}
+
+Update the session state document. Follow the update rules: append KEY DECISIONS, replace WORKING CONTEXT, update TASK TREE and CONVERSATION DYNAMICS.`
+        : `[INITIAL STATE REQUEST - Version 1]
+
+[CONVERSATION]
+${conversationChunks.join("\n\n")}
+
+Build the initial session state document from this conversation.`;
+
+      // 4. Send to Compactor agent
+      const response = query({
+        prompt: compactorPrompt,
+        options: {
+          resume: this.compactorSessionId,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 1,
+          maxBudgetUsd: 0.30,
+          maxThinkingTokens: 2048,
+        },
+      });
+
+      let stateText = "";
+      for await (const sdkMsg of response) {
+        if (sdkMsg.type === "result") {
+          const resultMsg = sdkMsg as SDKResultMessage;
+          if (resultMsg.subtype === "success") {
+            stateText = resultMsg.result || "";
+            log(`Compactor v${this.compactorVersion}: ${stateText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+          } else {
+            log(`Compactor error: ${resultMsg.subtype}`);
+          }
+        }
+      }
+
+      if (!stateText || stateText.length < 50) {
+        log("Compactor: empty or too short result, skipping save");
+        return;
+      }
+
+      // 5. Save raw tail (last ~40k tokens of conversation) to a file
+      const tailChunks = conversationChunks.slice(-Math.ceil(conversationChunks.length / 2));
+      const rawTailDir = path.join(path.dirname(transcriptPath), "compactor_tails");
+      try { fs.mkdirSync(rawTailDir, { recursive: true }); } catch { /* exists */ }
+      const rawTailPath = path.join(rawTailDir, `${this.config.sessionId}_v${this.compactorVersion}.txt`);
+      fs.writeFileSync(rawTailPath, tailChunks.join("\n\n"), "utf-8");
+
+      // 6. Save state to DB
+      await this.db.query(
+        `INSERT INTO session_state (session_id, project_slug, state_text, raw_tail_path, token_estimate, version)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          this.config.sessionId,
+          this.config.projectSlug,
+          stateText,
+          rawTailPath,
+          currentTokenEstimate,
+          this.compactorVersion,
+        ]
+      );
+
+      this.lastCompactedSize = currentTokenEstimate;
+      log(`Compactor: saved state v${this.compactorVersion} to DB + raw tail to ${rawTailPath}`);
+    } catch (err: any) {
+      log(`Compactor error: ${err.message}`);
+    } finally {
+      this.compactorBusy = false;
+    }
+  }
+
+  // ============================================
   // SHUTDOWN
   // ============================================
 
@@ -543,6 +792,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
 
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.compactorTimer) clearInterval(this.compactorTimer);
 
     // Update state
     try {
@@ -608,15 +858,21 @@ async function main(): Promise<void> {
     cwd: getArg("cwd", process.cwd()),
     retrieverEnabled: getArg("retriever", "on") !== "off",
     learnerEnabled: getArg("learner", "on") !== "off",
+    compactorEnabled: getArg("compactor", "on") !== "off",
     pollIntervalMs: 2000,
     heartbeatIntervalMs: 30000,
+    compactorCheckIntervalMs: 30000,        // Check every 30s
+    compactorTokenThreshold: 20000,          // Compact every ~20k new tokens
     retrieverModel: "claude-haiku-4-5-20251001",
-    learnerModel: "claude-sonnet-4-6",
+    learnerModel: "claude-haiku-4-5-20251001",
+    compactorModel: "claude-haiku-4-5-20251001",
     mcpServerScript: "C:/Users/user/.claude/tools/python/memory_mcp_server.py",
     pythonPath: "C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe",
+    transcriptPath: getArg("transcript-path", ""),
+    projectSlug: getArg("project-slug", ""),
   };
 
-  log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}`);
+  log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}`);
 
   const orchestrator = new Orchestrator(config);
 

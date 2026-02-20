@@ -119,8 +119,25 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- SESSION_STATE: Compactor agent's rolling summaries for /clear re-injection
+CREATE TABLE IF NOT EXISTS session_state (
+    id SERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    project_slug TEXT,                     -- project directory slug for lookup
+    state_text TEXT NOT NULL,              -- structured summary (IDENTITY, TASKS, DECISIONS, etc.)
+    raw_tail_path TEXT,                    -- path to file with last ~40k raw conversation
+    token_estimate INTEGER DEFAULT 0,      -- estimated tokens at time of compaction
+    version INTEGER DEFAULT 1,             -- increments each time Compactor updates
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_state_session ON session_state(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_state_project ON session_state(project_slug);
+CREATE INDEX IF NOT EXISTS idx_session_state_updated ON session_state(updated_at DESC);
+
 -- Verify migration
 DO $$
 BEGIN
-    RAISE NOTICE 'Migration complete. Tables created: cognitive_inbox, retrieval_inbox, generated_tools, orchestrator_state';
+    RAISE NOTICE 'Migration complete. Tables created: cognitive_inbox, retrieval_inbox, generated_tools, orchestrator_state, session_state';
 END $$;

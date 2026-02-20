@@ -4,7 +4,21 @@
 
 PYTHON="C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe"
 INPUT=$(cat)
-SESSION_ID=$("$PYTHON" -c "import json,sys; print(json.loads(sys.stdin.read()).get('session_id',''))" <<< "$INPUT" 2>/dev/null)
+PARSED=$("$PYTHON" -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    print(d.get('session_id', ''))
+    print(d.get('reason', ''))
+    print(d.get('transcript_path', ''))
+except:
+    print('')
+    print('')
+    print('')
+" <<< "$INPUT" 2>/dev/null)
+SESSION_ID=$(echo "$PARSED" | sed -n '1p')
+REASON=$(echo "$PARSED" | sed -n '2p')
+TRANSCRIPT_PATH=$(echo "$PARSED" | sed -n '3p')
 
 if [ -z "$SESSION_ID" ]; then
   exit 0
@@ -19,6 +33,25 @@ PID_FILE="${PLUGIN_ROOT}/.orchestrator.pid"
 # Signal orchestrator to stop via DB
 export PGPASSWORD="***REDACTED***"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
+
+# If reason is "clear" -> save marker so SessionStart can find the previous state
+if [ "$REASON" = "clear" ]; then
+  # Save previous session_id to a marker file for the next SessionStart to pick up
+  MARKER_DIR="$HOME/.claude/aidam"
+  mkdir -p "$MARKER_DIR"
+  echo "$SESSION_ID" > "${MARKER_DIR}/last_cleared_session"
+
+  # Force a final compactor run before we lose the context
+  # (Only if there's a transcript and a session_state exists)
+  HAS_STATE=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+    "SELECT COUNT(*) FROM session_state WHERE session_id='${SESSION_ID}';" \
+    2>/dev/null || echo "0")
+
+  if [ "$HAS_STATE" = "0" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    # No compactor state yet - do a quick summary via Python
+    "$PYTHON" "$(dirname "$0")/emergency_compact.py" "$SESSION_ID" "$TRANSCRIPT_PATH" 2>/dev/null || true
+  fi
+fi
 
 "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
   "UPDATE orchestrator_state SET status='stopping' WHERE session_id='${SESSION_ID}' AND status='running';" \

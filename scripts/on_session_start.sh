@@ -13,12 +13,18 @@ try:
     d = json.loads(sys.stdin.read())
     print(d.get('session_id', ''))
     print(d.get('cwd', ''))
+    print(d.get('transcript_path', ''))
+    print(d.get('source', ''))
 except:
+    print('')
+    print('')
     print('')
     print('')
 " <<< "$INPUT" 2>/dev/null)
 SESSION_ID=$(echo "$PARSED" | sed -n '1p')
 CWD=$(echo "$PARSED" | sed -n '2p')
+TRANSCRIPT_PATH=$(echo "$PARSED" | sed -n '3p')
+SOURCE=$(echo "$PARSED" | sed -n '4p')
 
 if [ -z "$SESSION_ID" ]; then
   exit 0
@@ -27,9 +33,10 @@ fi
 # Check env vars for enable/disable
 RETRIEVER_ENABLED="${AIDAM_MEMORY_RETRIEVER:-on}"
 LEARNER_ENABLED="${AIDAM_MEMORY_LEARNER:-on}"
+COMPACTOR_ENABLED="${AIDAM_MEMORY_COMPACTOR:-on}"
 
-# If both are off, do nothing
-if [ "$RETRIEVER_ENABLED" = "off" ] && [ "$LEARNER_ENABLED" = "off" ]; then
+# If all are off, do nothing
+if [ "$RETRIEVER_ENABLED" = "off" ] && [ "$LEARNER_ENABLED" = "off" ] && [ "$COMPACTOR_ENABLED" = "off" ]; then
   echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"[AIDAM Memory: disabled]"}}'
   exit 0
 fi
@@ -64,12 +71,22 @@ PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
   "UPDATE orchestrator_state SET status='crashed', stopped_at=CURRENT_TIMESTAMP WHERE status IN ('starting','running') AND last_heartbeat_at < CURRENT_TIMESTAMP - INTERVAL '120 seconds';" \
   2>/dev/null || true
 
+# Derive project slug from cwd (same format as Claude Code uses for project dirs)
+PROJECT_SLUG=$("$PYTHON" -c "
+import sys
+cwd = '${CWD:-$(pwd)}'.replace('\\\\', '/').replace(':', '-').replace('/', '-').strip('-')
+print(cwd)
+" 2>/dev/null)
+
 # Launch orchestrator in background
 node "$ORCHESTRATOR_SCRIPT" \
   "--session-id=${SESSION_ID}" \
   "--cwd=${CWD:-$(pwd)}" \
   "--retriever=${RETRIEVER_ENABLED}" \
   "--learner=${LEARNER_ENABLED}" \
+  "--compactor=${COMPACTOR_ENABLED}" \
+  "--transcript-path=${TRANSCRIPT_PATH}" \
+  "--project-slug=${PROJECT_SLUG}" \
   > "$LOG_FILE" 2>&1 &
 
 ORCH_PID=$!
@@ -90,8 +107,19 @@ done
 CONTEXT="[AIDAM Memory: active"
 if [ "$RETRIEVER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, retriever=on"; fi
 if [ "$LEARNER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, learner=on"; fi
+if [ "$COMPACTOR_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, compactor=on"; fi
 if [ "$STATUS" != "running" ]; then CONTEXT="${CONTEXT}, initializing..."; fi
 CONTEXT="${CONTEXT}]"
+
+# If source is "clear" or "compact", inject previous session state
+if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
+  INJECT=$("$PYTHON" "$(dirname "$0")/inject_state.py" "$SOURCE" 2>/dev/null || echo "")
+  if [ -n "$INJECT" ]; then
+    # inject_state.py outputs the full JSON
+    echo "$INJECT"
+    exit 0
+  fi
+fi
 
 cat <<EOF
 {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"${CONTEXT}"}}
