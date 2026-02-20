@@ -54,16 +54,6 @@ LOG_FILE="${LOG_DIR}/aidam_orchestrator_$(date +%Y%m%d_%H%M%S).log"
 
 mkdir -p "$LOG_DIR"
 
-# Check if orchestrator is already running for any session
-if [ -f "$PID_FILE" ]; then
-  OLD_PID=$(cat "$PID_FILE")
-  if kill -0 "$OLD_PID" 2>/dev/null; then
-    echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"[AIDAM Memory: active (existing orchestrator)]"}}'
-    exit 0
-  fi
-  rm -f "$PID_FILE"
-fi
-
 # Detect zombie orchestrators in DB
 export PGPASSWORD="***REDACTED***"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
@@ -71,7 +61,44 @@ PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
   "UPDATE orchestrator_state SET status='crashed', stopped_at=CURRENT_TIMESTAMP WHERE status IN ('starting','running') AND last_heartbeat_at < CURRENT_TIMESTAMP - INTERVAL '120 seconds';" \
   2>/dev/null || true
 
-# Derive project slug from cwd (same format as Claude Code uses for project dirs)
+# ------------------------------------------------------------------
+# PHASE 1: Handle /clear or /compact — inject previous session state
+# ------------------------------------------------------------------
+LAST_COMPACT_SIZE=0
+INJECT=""
+
+if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
+  INJECT=$("$PYTHON" "$(dirname "$0")/inject_state.py" "$SOURCE" 2>/dev/null || echo "")
+  if [ -n "$INJECT" ]; then
+    # Estimate the token size of the injected context for the Compactor
+    # so it doesn't re-trigger immediately on the injected content
+    INJECT_CHARS=$(echo "$INJECT" | wc -c | tr -d ' ')
+    LAST_COMPACT_SIZE=$(( INJECT_CHARS / 4 ))  # ~4 chars per token
+  fi
+
+  # Kill previous orchestrator if still running (SessionEnd should have stopped it)
+  if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE")
+    kill "$OLD_PID" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+else
+  # Normal startup: check if orchestrator is already running
+  if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE")
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+      echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"[AIDAM Memory: active (existing orchestrator)]"}}'
+      exit 0
+    fi
+    rm -f "$PID_FILE"
+  fi
+fi
+
+# ------------------------------------------------------------------
+# PHASE 2: Launch orchestrator
+# ------------------------------------------------------------------
+
+# Derive project slug from cwd
 PROJECT_SLUG=$("$PYTHON" -c "
 import sys
 cwd = '${CWD:-$(pwd)}'.replace('\\\\', '/').replace(':', '-').replace('/', '-').strip('-')
@@ -87,6 +114,7 @@ node "$ORCHESTRATOR_SCRIPT" \
   "--compactor=${COMPACTOR_ENABLED}" \
   "--transcript-path=${TRANSCRIPT_PATH}" \
   "--project-slug=${PROJECT_SLUG}" \
+  "--last-compact-size=${LAST_COMPACT_SIZE}" \
   > "$LOG_FILE" 2>&1 &
 
 ORCH_PID=$!
@@ -104,25 +132,23 @@ for i in 1 2 3; do
   fi
 done
 
-CONTEXT="[AIDAM Memory: active"
-if [ "$RETRIEVER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, retriever=on"; fi
-if [ "$LEARNER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, learner=on"; fi
-if [ "$COMPACTOR_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, compactor=on"; fi
-if [ "$STATUS" != "running" ]; then CONTEXT="${CONTEXT}, initializing..."; fi
-CONTEXT="${CONTEXT}]"
+# ------------------------------------------------------------------
+# PHASE 3: Output — inject state (if /clear) or normal status
+# ------------------------------------------------------------------
 
-# If source is "clear" or "compact", inject previous session state
-if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
-  INJECT=$("$PYTHON" "$(dirname "$0")/inject_state.py" "$SOURCE" 2>/dev/null || echo "")
-  if [ -n "$INJECT" ]; then
-    # inject_state.py outputs the full JSON
-    echo "$INJECT"
-    exit 0
-  fi
-fi
-
-cat <<EOF
+if [ -n "$INJECT" ]; then
+  # inject_state.py already outputs the full hookSpecificOutput JSON
+  echo "$INJECT"
+else
+  CONTEXT="[AIDAM Memory: active"
+  if [ "$RETRIEVER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, retriever=on"; fi
+  if [ "$LEARNER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, learner=on"; fi
+  if [ "$COMPACTOR_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, compactor=on"; fi
+  if [ "$STATUS" != "running" ]; then CONTEXT="${CONTEXT}, initializing..."; fi
+  CONTEXT="${CONTEXT}]"
+  cat <<EOF
 {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"${CONTEXT}"}}
 EOF
+fi
 
 exit 0

@@ -33,6 +33,7 @@ interface OrchestratorConfig {
   pythonPath: string;
   transcriptPath: string;
   projectSlug: string;
+  lastCompactSize: number;
 }
 
 interface CognitiveMessage {
@@ -121,6 +122,8 @@ class Orchestrator {
     this.config = config;
     this.db = new Client(DB_CONFIG);
     this.slidingWindow = new SlidingWindow(5);
+    // Initialize from config (set by SessionStart when source=clear)
+    this.lastCompactedSize = config.lastCompactSize;
   }
 
   async start(): Promise<void> {
@@ -620,41 +623,23 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
     this.compactorBusy = true;
 
     try {
-      // 1. Read only NEW messages since last compaction (not the whole transcript)
+      // 1. Read transcript and extract user/assistant messages
       const rawContent = fs.readFileSync(transcriptPath, "utf-8");
       const lines = rawContent.split("\n").filter((l) => l.trim());
 
-      // Calculate how many lines to skip (based on lastCompactedSize)
-      // We only need messages since the last compaction point
-      const startFromByte = this.lastCompactedSize * 6; // rough byte estimate from token count
-      let bytesSeen = 0;
-      let startLine = 0;
+      // Extract ALL user/assistant messages from the transcript
+      const allChunks: { text: string; byteOffset: number }[] = [];
+      let byteOffset = 0;
 
-      if (this.lastCompactedSize > 0) {
-        // Find the approximate starting line based on bytes consumed
-        for (let i = 0; i < lines.length; i++) {
-          bytesSeen += lines[i].length + 1;
-          if (bytesSeen >= startFromByte) {
-            startLine = i;
-            break;
-          }
-        }
-      }
-
-      // Extract user and assistant messages from startLine onwards
-      const conversationChunks: string[] = [];
-      let charsCollected = 0;
-      const maxChars = 40000; // ~10k tokens max to send to agent
-
-      for (let i = startLine; i < lines.length && charsCollected < maxChars; i++) {
+      for (let i = 0; i < lines.length; i++) {
+        const lineBytes = lines[i].length + 1;
         try {
           const entry = JSON.parse(lines[i]);
           if (entry.type === "user" && entry.message?.content) {
             const content = typeof entry.message.content === "string"
               ? entry.message.content
               : JSON.stringify(entry.message.content);
-            conversationChunks.push(`[USER] ${content.slice(0, 3000)}`);
-            charsCollected += content.length;
+            allChunks.push({ text: `[USER] ${content.slice(0, 3000)}`, byteOffset });
           } else if (entry.type === "assistant" && entry.message?.content) {
             const blocks = entry.message.content;
             if (Array.isArray(blocks)) {
@@ -663,14 +648,32 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
                 .map((b: any) => b.text)
                 .join("\n");
               if (text) {
-                conversationChunks.push(`[CLAUDE] ${text.slice(0, 3000)}`);
-                charsCollected += text.length;
+                allChunks.push({ text: `[CLAUDE] ${text.slice(0, 3000)}`, byteOffset });
               }
             }
           }
         } catch {
           // Skip malformed lines
         }
+        byteOffset += lineBytes;
+      }
+
+      // 2. Take the LAST 40k tokens (~240k bytes) of conversation
+      //    This gives the Compactor a 40k context window even though it fires every 20k
+      const contextWindowTokens = 40000;
+      const contextWindowBytes = contextWindowTokens * 6;
+      const totalBytes = rawContent.length;
+      const startByte = Math.max(0, totalBytes - contextWindowBytes);
+
+      const conversationChunks: string[] = [];
+      let charsCollected = 0;
+      const maxChars = 60000; // ~15k tokens max to send to agent (for 40k window)
+
+      for (const chunk of allChunks) {
+        if (chunk.byteOffset < startByte) continue;
+        if (charsCollected >= maxChars) break;
+        conversationChunks.push(chunk.text);
+        charsCollected += chunk.text.length;
       }
 
       if (conversationChunks.length === 0) {
@@ -870,6 +873,7 @@ async function main(): Promise<void> {
     pythonPath: "C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe",
     transcriptPath: getArg("transcript-path", ""),
     projectSlug: getArg("project-slug", ""),
+    lastCompactSize: parseInt(getArg("last-compact-size", "0"), 10) || 0,
   };
 
   log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}`);
