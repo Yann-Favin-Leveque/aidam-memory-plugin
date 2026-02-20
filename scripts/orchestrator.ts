@@ -430,6 +430,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
           maxTurns: 5,
           maxBudgetUsd: 0.15,
           maxThinkingTokens: 1024,
+          cwd: this.config.cwd,
         },
       });
 
@@ -519,6 +520,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
           allowDangerouslySkipPermissions: true,
           maxTurns: 8,
           maxBudgetUsd: 0.25,
+          cwd: this.config.cwd,
         },
       });
 
@@ -667,7 +669,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
 
       const conversationChunks: string[] = [];
       let charsCollected = 0;
-      const maxChars = 60000; // ~15k tokens max to send to agent (for 40k window)
+      const maxChars = 30000; // ~7.5k tokens max to send to agent
 
       for (const chunk of allChunks) {
         if (chunk.byteOffset < startByte) continue;
@@ -722,6 +724,7 @@ Build the initial session state document from this conversation.`;
           maxTurns: 1,
           maxBudgetUsd: 0.30,
           maxThinkingTokens: 2048,
+          cwd: this.config.cwd,
         },
       });
 
@@ -734,6 +737,7 @@ Build the initial session state document from this conversation.`;
             log(`Compactor v${this.compactorVersion}: ${stateText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
           } else {
             log(`Compactor error: ${resultMsg.subtype}`);
+            log(`Compactor error details: ${JSON.stringify(resultMsg).slice(0, 500)}`);
           }
         }
       }
@@ -768,6 +772,7 @@ Build the initial session state document from this conversation.`;
       log(`Compactor: saved state v${this.compactorVersion} to DB + raw tail to ${rawTailPath}`);
     } catch (err: any) {
       log(`Compactor error: ${err.message}`);
+      if (err.stack) log(`Compactor stack: ${err.stack.slice(0, 500)}`);
     } finally {
       this.compactorBusy = false;
     }
