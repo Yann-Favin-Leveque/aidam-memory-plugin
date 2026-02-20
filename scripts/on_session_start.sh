@@ -87,8 +87,16 @@ else
   if [ -f "$PID_FILE" ]; then
     OLD_PID=$(cat "$PID_FILE")
     if kill -0 "$OLD_PID" 2>/dev/null; then
-      echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"[AIDAM Memory: active (existing orchestrator)]"}}'
-      exit 0
+      # PID is alive — but verify via DB that it's actually running for THIS session
+      DB_STATUS=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+        "SELECT status FROM orchestrator_state WHERE status='running' AND last_heartbeat_at > CURRENT_TIMESTAMP - INTERVAL '60 seconds' ORDER BY id DESC LIMIT 1;" \
+        2>/dev/null | tr -d ' ' || echo "")
+      if [ "$DB_STATUS" = "running" ]; then
+        echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"[AIDAM Memory: active (existing orchestrator)]"}}'
+        exit 0
+      fi
+      # PID alive but DB says not running — kill the zombie
+      kill "$OLD_PID" 2>/dev/null || true
     fi
     rm -f "$PID_FILE"
   fi
@@ -98,12 +106,12 @@ fi
 # PHASE 2: Launch orchestrator
 # ------------------------------------------------------------------
 
-# Derive project slug from cwd
-PROJECT_SLUG=$("$PYTHON" -c "
+# Derive project slug from cwd (pass via stdin to avoid backslash issues on Windows)
+PROJECT_SLUG=$(echo "${CWD:-$(pwd)}" | "$PYTHON" -c "
 import sys
-cwd = '${CWD:-$(pwd)}'.replace('\\\\', '/').replace(':', '-').replace('/', '-').strip('-')
+cwd = sys.stdin.read().strip().replace('\\\\', '/').replace(':', '-').replace('/', '-').strip('-')
 print(cwd)
-" 2>/dev/null)
+" 2>/dev/null || echo "unknown")
 
 # Launch orchestrator in background
 node "$ORCHESTRATOR_SCRIPT" \

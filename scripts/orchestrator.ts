@@ -798,11 +798,20 @@ Build the initial session state document from this conversation.`;
 
     log("Shutting down...");
 
+    // Clear all intervals immediately
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.compactorTimer) clearInterval(this.compactorTimer);
+    this.pollTimer = undefined;
+    this.heartbeatTimer = undefined;
+    this.compactorTimer = undefined;
 
-    // Update state
+    // Update state — use a short timeout to avoid hanging
+    const shutdownTimeout = setTimeout(() => {
+      log("Shutdown timeout — force exit");
+      process.exit(0);
+    }, 5000);
+
     try {
       await this.db.query(
         `UPDATE orchestrator_state SET status = 'stopped', stopped_at = CURRENT_TIMESTAMP
@@ -830,6 +839,7 @@ Build the initial session state document from this conversation.`;
       /* best effort */
     }
 
+    clearTimeout(shutdownTimeout);
     log("Shutdown complete.");
     process.exit(0);
   }

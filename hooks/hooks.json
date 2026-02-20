@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/on_prompt_submit.py\"",
+            "command": "bash -c '\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/on_prompt_submit.py\"'",
             "timeout": 8,
             "statusMessage": "Retrieving memory context..."
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/on_tool_use.py\"",
+            "command": "bash -c '\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/on_tool_use.py\"'",
             "async": true,
             "timeout": 5
           }
