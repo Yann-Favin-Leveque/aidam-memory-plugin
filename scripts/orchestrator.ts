@@ -428,7 +428,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
           maxTurns: 5,
-          maxBudgetUsd: 0.15,
+          maxBudgetUsd: 0.50,
           maxThinkingTokens: 1024,
           cwd: this.config.cwd,
         },
@@ -519,7 +519,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
           maxTurns: 8,
-          maxBudgetUsd: 0.25,
+          maxBudgetUsd: 0.50,
           cwd: this.config.cwd,
         },
       });
