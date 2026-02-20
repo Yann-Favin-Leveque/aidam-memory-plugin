@@ -1,0 +1,41 @@
+{
+  "retriever": {
+    "enabled": true,
+    "model": "claude-sonnet-4-6",
+    "maxTurns": 3,
+    "maxBudgetUsd": 0.15,
+    "slidingWindowSize": 5,
+    "resultExpirySeconds": 60
+  },
+  "learner": {
+    "enabled": true,
+    "model": "claude-sonnet-4-6",
+    "maxTurns": 5,
+    "maxBudgetUsd": 0.15,
+    "skipTools": [
+      "Read", "Glob", "Grep", "WebSearch", "WebFetch",
+      "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+      "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+      "NotebookEdit", "TaskOutput", "TaskStop",
+      "EnterWorktree", "Skill"
+    ],
+    "maxToolResponseChars": 4000
+  },
+  "orchestrator": {
+    "pollIntervalMs": 2000,
+    "heartbeatIntervalMs": 30000,
+    "maxBatchSize": 10,
+    "zombieDetectionSeconds": 120
+  },
+  "paths": {
+    "mcpServerScript": "C:/Users/user/.claude/tools/python/memory_mcp_server.py",
+    "pythonExecutable": "C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe",
+    "generatedToolsDir": "~/.claude/generated_tools",
+    "logDir": "~/.claude/logs"
+  },
+  "envVars": {
+    "AIDAM_MEMORY_RETRIEVER": "on/off - Enable/disable the Retriever session (default: on)",
+    "AIDAM_MEMORY_LEARNER": "on/off - Enable/disable the Learner session (default: on)",
+    "AIDAM_MEMORY_DEBUG": "on/off - Verbose logging (default: off)"
+  }
+}

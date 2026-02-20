@@ -1,0 +1,20 @@
+{
+  "name": "aidam-memory-plugin",
+  "version": "1.0.0",
+  "description": "Cognitive memory system for Claude Code with background Retriever and Learner sessions",
+  "main": "scripts/orchestrator.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node scripts/orchestrator.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0"
+  },
+  "private": true
+}

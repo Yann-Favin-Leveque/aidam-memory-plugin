@@ -1,0 +1,10 @@
+{
+  "name": "aidam-memory",
+  "version": "1.0.0",
+  "description": "Cognitive memory system with background Retriever and Learner sessions",
+  "author": {
+    "name": "Yann"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "cognitive", "retriever", "learner", "postgresql"]
+}
