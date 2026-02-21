@@ -21,14 +21,32 @@
     ],
     "maxToolResponseChars": 4000
   },
+  "curator": {
+    "enabled": false,
+    "model": "claude-haiku-4-5-20251001",
+    "maxBudgetUsd": 0.30,
+    "intervalMs": 21600000
+  },
   "orchestrator": {
     "pollIntervalMs": 2000,
     "heartbeatIntervalMs": 30000,
     "maxBatchSize": 10,
     "zombieDetectionSeconds": 120
   },
+  "budgets": {
+    "retrieverPerCall": 0.50,
+    "learnerPerCall": 0.50,
+    "compactorPerCall": 0.30,
+    "curatorPerCall": 0.30,
+    "sessionTotal": 5.00
+  },
+  "batch": {
+    "windowMs": 10000,
+    "minSize": 3,
+    "maxSize": 10
+  },
   "paths": {
-    "mcpServerScript": "C:/Users/user/.claude/tools/python/memory_mcp_server.py",
+    "mcpServerScript": "mcp/memory_mcp_server.py",
     "pythonExecutable": "C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe",
     "generatedToolsDir": "~/.claude/generated_tools",
     "logDir": "~/.claude/logs"
@@ -36,6 +54,10 @@
   "envVars": {
     "AIDAM_MEMORY_RETRIEVER": "on/off - Enable/disable the Retriever session (default: on)",
     "AIDAM_MEMORY_LEARNER": "on/off - Enable/disable the Learner session (default: on)",
-    "AIDAM_MEMORY_DEBUG": "on/off - Verbose logging (default: off)"
+    "AIDAM_MEMORY_CURATOR": "on/off - Enable/disable the Curator session (default: off)",
+    "AIDAM_MEMORY_DEBUG": "on/off - Verbose logging (default: off)",
+    "AIDAM_RETRIEVER_BUDGET": "Per-call budget for Retriever (default: 0.50)",
+    "AIDAM_LEARNER_BUDGET": "Per-call budget for Learner (default: 0.50)",
+    "AIDAM_SESSION_BUDGET": "Total session budget (default: 5.00)"
   }
 }

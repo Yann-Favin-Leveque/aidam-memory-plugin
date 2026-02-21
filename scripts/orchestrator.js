@@ -89,16 +89,24 @@ class Orchestrator {
     retrieverSessionId;
     learnerSessionId;
     compactorSessionId;
+    curatorSessionId;
     running = false;
     slidingWindow;
     pollTimer;
     heartbeatTimer;
     compactorTimer;
+    curatorTimer;
     retrieverBusy = false;
     learnerBusy = false;
     compactorBusy = false;
+    curatorBusy = false;
     lastCompactedSize = 0;
     compactorVersion = 0;
+    totalCostUsd = 0;
+    lastCuratorRun = 0;
+    // Learner batch buffer
+    learnerBuffer = [];
+    learnerBatchTimer;
     constructor(config) {
         this.config = config;
         this.db = new pg_1.Client(DB_CONFIG);
@@ -127,6 +135,9 @@ class Orchestrator {
         if (this.config.compactorEnabled) {
             initPromises.push(this.initCompactor());
         }
+        if (this.config.curatorEnabled) {
+            initPromises.push(this.initCurator());
+        }
         await Promise.all(initPromises);
         // Mark as running
         await this.db.query(`UPDATE orchestrator_state SET status = 'running',
@@ -139,6 +150,9 @@ class Orchestrator {
         if (this.config.compactorEnabled) {
             this.startCompactorMonitor();
         }
+        if (this.config.curatorEnabled) {
+            this.startCuratorSchedule();
+        }
         // Graceful shutdown handlers
         process.on("SIGTERM", () => this.shutdown());
         process.on("SIGINT", () => this.shutdown());
@@ -146,7 +160,7 @@ class Orchestrator {
             log(`Uncaught exception: ${err.message}`);
             this.shutdown();
         });
-        log(`Orchestrator running. Retriever: ${this.retrieverSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}, Compactor: ${this.compactorSessionId || "disabled"}`);
+        log(`Orchestrator running. Retriever: ${this.retrieverSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}, Compactor: ${this.compactorSessionId || "disabled"}, Curator: ${this.curatorSessionId || "disabled"}`);
     }
     getMcpConfig() {
         return {
@@ -306,19 +320,31 @@ class Orchestrator {
             try {
                 if (msg.message_type === "prompt_context" && this.config.retrieverEnabled) {
                     await this.routeToRetriever(msg);
+                    await this.markCompleted(msg.id);
                 }
                 else if (msg.message_type === "tool_use" && this.config.learnerEnabled) {
-                    await this.routeToLearner(msg);
+                    // Buffer tool_use messages for batch processing
+                    this.learnerBuffer.push(msg);
+                    this.checkLearnerBatchFlush();
+                }
+                else if (msg.message_type === "curator_trigger") {
+                    await this.runCurator();
+                    await this.markCompleted(msg.id);
                 }
                 else if (msg.message_type === "session_event") {
                     const event = msg.payload?.event;
                     if (event === "session_end") {
+                        // Flush any remaining buffered observations before shutdown
+                        await this.flushLearnerBatch();
                         await this.markCompleted(msg.id);
                         await this.shutdown();
                         return;
                     }
+                    await this.markCompleted(msg.id);
                 }
-                await this.markCompleted(msg.id);
+                else {
+                    await this.markCompleted(msg.id);
+                }
             }
             catch (err) {
                 log(`Error processing message ${msg.id}: ${err.message}`);
@@ -380,8 +406,8 @@ Search memory for relevant context for this user's work. If nothing relevant, re
                     ],
                     permissionMode: "bypassPermissions",
                     allowDangerouslySkipPermissions: true,
-                    maxTurns: 12,
-                    maxBudgetUsd: 0.50,
+                    maxTurns: 5,
+                    maxBudgetUsd: this.config.retrieverBudget,
                     maxThinkingTokens: 1024,
                     cwd: this.config.cwd,
                 },
@@ -392,6 +418,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
                     if (resultMsg.subtype === "success") {
                         resultText = resultMsg.result || "";
                         log(`Retriever result: ${resultText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+                        this.totalCostUsd += resultMsg.total_cost_usd;
                     }
                     else {
                         log(`Retriever error: ${resultMsg.subtype}`);
@@ -414,6 +441,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
         }
         finally {
             this.retrieverBusy = false;
+            this.checkSessionBudget();
         }
     }
     async writeRetrievalResult(promptHash, type, text) {
@@ -423,6 +451,122 @@ Search memory for relevant context for this user's work. If nothing relevant, re
     // ============================================
     // LEARNER ROUTING
     // ============================================
+    // ============================================
+    // LEARNER BATCH PROCESSING
+    // ============================================
+    checkLearnerBatchFlush() {
+        // Flush immediately if buffer is full
+        if (this.learnerBuffer.length >= this.config.batchMaxSize) {
+            this.flushLearnerBatch();
+            return;
+        }
+        // Start batch timer if not already running
+        if (!this.learnerBatchTimer && this.learnerBuffer.length > 0) {
+            this.learnerBatchTimer = setTimeout(() => {
+                this.learnerBatchTimer = undefined;
+                this.flushLearnerBatch();
+            }, this.config.batchWindowMs);
+        }
+        // Flush early if we hit min size
+        if (this.learnerBuffer.length >= this.config.batchMinSize && this.learnerBatchTimer) {
+            clearTimeout(this.learnerBatchTimer);
+            this.learnerBatchTimer = undefined;
+            this.flushLearnerBatch();
+        }
+    }
+    async flushLearnerBatch() {
+        if (this.learnerBuffer.length === 0)
+            return;
+        if (this.learnerBusy) {
+            // Re-queue all buffered messages for next poll
+            for (const msg of this.learnerBuffer) {
+                await this.db.query("UPDATE cognitive_inbox SET status = 'pending' WHERE id = $1", [msg.id]);
+            }
+            this.learnerBuffer = [];
+            return;
+        }
+        const batch = this.learnerBuffer.splice(0, this.config.batchMaxSize);
+        if (batch.length === 1) {
+            // Single message — use normal routing
+            await this.routeToLearner(batch[0]);
+            await this.markCompleted(batch[0].id);
+            return;
+        }
+        // Batch mode: format all observations as one prompt
+        log(`Batch: ${batch.length} observations → Learner`);
+        this.learnerBusy = true;
+        const observations = batch.map((msg, i) => {
+            const p = msg.payload;
+            const inputStr = JSON.stringify(p.tool_input, null, 2);
+            const responseStr = JSON.stringify(p.tool_response, null, 2);
+            return `### Observation ${i + 1}\nTool: ${p.tool_name}\nInput: ${inputStr.slice(0, 1500)}\nResult: ${responseStr.slice(0, 1500)}`;
+        }).join("\n\n");
+        const learnerPrompt = `[BATCH TOOL OBSERVATIONS — ${batch.length} items]
+
+${observations}
+
+Analyze ALL observations together. Look for patterns BETWEEN them. For each observation worth saving, save to memory (check for duplicates first). If nothing worth saving, respond SKIP.`;
+        try {
+            const response = (0, claude_agent_sdk_1.query)({
+                prompt: learnerPrompt,
+                options: {
+                    resume: this.learnerSessionId,
+                    mcpServers: this.getMcpConfig(),
+                    allowedTools: [
+                        "mcp__memory__memory_search",
+                        "mcp__memory__memory_save_learning",
+                        "mcp__memory__memory_save_error",
+                        "mcp__memory__memory_save_pattern",
+                        "mcp__memory__memory_drilldown_save",
+                        "mcp__memory__memory_drilldown_search",
+                        "mcp__memory__memory_get_project",
+                        "mcp__memory__memory_get_recent_learnings",
+                        "mcp__memory__db_select",
+                        "mcp__memory__db_execute",
+                        "Bash",
+                    ],
+                    permissionMode: "bypassPermissions",
+                    allowDangerouslySkipPermissions: true,
+                    maxTurns: 8,
+                    maxBudgetUsd: this.config.learnerBudget,
+                    cwd: this.config.cwd,
+                },
+            });
+            for await (const sdkMsg of response) {
+                if (sdkMsg.type === "result") {
+                    const resultMsg = sdkMsg;
+                    if (resultMsg.subtype === "success") {
+                        const summary = (resultMsg.result || "SKIP").slice(0, 200);
+                        log(`Learner (batch ${batch.length}): ${summary}, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+                        this.totalCostUsd += resultMsg.total_cost_usd;
+                    }
+                    else {
+                        log(`Learner batch error: ${resultMsg.subtype}`);
+                    }
+                }
+            }
+            // Mark all batch messages as completed
+            for (const msg of batch) {
+                await this.markCompleted(msg.id);
+            }
+        }
+        catch (err) {
+            log(`Learner batch error: ${err.message}`);
+            for (const msg of batch) {
+                await this.markFailed(msg.id);
+            }
+        }
+        finally {
+            this.learnerBusy = false;
+            this.checkSessionBudget();
+        }
+    }
+    async checkSessionBudget() {
+        if (this.config.sessionBudget > 0 && this.totalCostUsd >= this.config.sessionBudget) {
+            log(`Session budget exhausted: $${this.totalCostUsd.toFixed(4)} >= $${this.config.sessionBudget}`);
+            await this.shutdown();
+        }
+    }
     async routeToLearner(msg) {
         if (!this.learnerSessionId)
             return;
@@ -463,8 +607,8 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
                     ],
                     permissionMode: "bypassPermissions",
                     allowDangerouslySkipPermissions: true,
-                    maxTurns: 12,
-                    maxBudgetUsd: 0.50,
+                    maxTurns: 8,
+                    maxBudgetUsd: this.config.learnerBudget,
                     cwd: this.config.cwd,
                 },
             });
@@ -474,6 +618,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
                     if (resultMsg.subtype === "success") {
                         const summary = (resultMsg.result || "SKIP").slice(0, 200);
                         log(`Learner: ${summary}, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+                        this.totalCostUsd += resultMsg.total_cost_usd;
                         this.slidingWindow.addClaudeSummary(`[Claude used ${payload.tool_name}: ${summary}]`);
                     }
                     else {
@@ -487,6 +632,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
         }
         finally {
             this.learnerBusy = false;
+            this.checkSessionBudget();
         }
     }
     // ============================================
@@ -652,7 +798,7 @@ Build the initial session state document from this conversation.`;
                     permissionMode: "bypassPermissions",
                     allowDangerouslySkipPermissions: true,
                     maxTurns: 1,
-                    maxBudgetUsd: 0.30,
+                    maxBudgetUsd: this.config.compactorBudget,
                     maxThinkingTokens: 2048,
                     cwd: this.config.cwd,
                 },
@@ -707,6 +853,128 @@ Build the initial session state document from this conversation.`;
         }
     }
     // ============================================
+    // CURATOR
+    // ============================================
+    async initCurator() {
+        log("Initializing Curator session...");
+        const promptPath = path.join(__dirname, "..", "prompts", "curator_system.md");
+        let systemPrompt;
+        try {
+            systemPrompt = fs.readFileSync(promptPath, "utf-8");
+        }
+        catch {
+            systemPrompt = "You are a memory database curator. Merge duplicates, archive stale entries, detect contradictions, and consolidate patterns. Report all actions.";
+        }
+        try {
+            const response = (0, claude_agent_sdk_1.query)({
+                prompt: systemPrompt + "\n\n[INIT] Curator session initialized. Waiting for maintenance triggers. Respond with READY.",
+                options: {
+                    model: this.config.curatorModel,
+                    mcpServers: this.getMcpConfig(),
+                    allowedTools: [
+                        "mcp__memory__memory_search",
+                        "mcp__memory__memory_save_learning",
+                        "mcp__memory__memory_save_pattern",
+                        "mcp__memory__memory_get_recent_learnings",
+                        "mcp__memory__memory_search_errors",
+                        "mcp__memory__memory_search_patterns",
+                        "mcp__memory__db_select",
+                        "mcp__memory__db_execute",
+                    ],
+                    permissionMode: "bypassPermissions",
+                    allowDangerouslySkipPermissions: true,
+                    maxTurns: 1,
+                    maxBudgetUsd: 0.05,
+                    maxThinkingTokens: 1024,
+                    cwd: this.config.cwd,
+                    persistSession: true,
+                },
+            });
+            for await (const msg of response) {
+                if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
+                    this.curatorSessionId = msg.session_id;
+                    log(`Curator session ID: ${this.curatorSessionId}`);
+                }
+            }
+        }
+        catch (err) {
+            log(`Curator init error: ${err.message}`);
+        }
+    }
+    startCuratorSchedule() {
+        this.lastCuratorRun = Date.now();
+        this.curatorTimer = setInterval(async () => {
+            if (!this.running || this.curatorBusy || !this.curatorSessionId)
+                return;
+            const elapsed = Date.now() - this.lastCuratorRun;
+            if (elapsed >= this.config.curatorIntervalMs) {
+                await this.runCurator();
+            }
+        }, 60000); // Check every minute if it's time to run
+    }
+    async runCurator() {
+        if (!this.curatorSessionId || this.curatorBusy)
+            return;
+        this.curatorBusy = true;
+        this.lastCuratorRun = Date.now();
+        log("Curator triggered: starting maintenance run...");
+        const curatorPrompt = `[MAINTENANCE RUN — ${new Date().toISOString()}]
+
+Run your full maintenance workflow:
+1. Scan for duplicate learnings/patterns (>80% overlap) — merge up to 10
+2. Archive stale entries (not retrieved in 30+ days, created 7+ days ago) — lower confidence
+3. Detect contradictions — flag them
+4. Consolidate related learnings into patterns if 3+ share a theme
+5. Produce your report
+
+Be efficient. If the database is clean, report "No actions needed".`;
+        try {
+            const response = (0, claude_agent_sdk_1.query)({
+                prompt: curatorPrompt,
+                options: {
+                    resume: this.curatorSessionId,
+                    mcpServers: this.getMcpConfig(),
+                    allowedTools: [
+                        "mcp__memory__memory_search",
+                        "mcp__memory__memory_save_learning",
+                        "mcp__memory__memory_save_pattern",
+                        "mcp__memory__memory_get_recent_learnings",
+                        "mcp__memory__memory_search_errors",
+                        "mcp__memory__memory_search_patterns",
+                        "mcp__memory__db_select",
+                        "mcp__memory__db_execute",
+                    ],
+                    permissionMode: "bypassPermissions",
+                    allowDangerouslySkipPermissions: true,
+                    maxTurns: 15,
+                    maxBudgetUsd: this.config.curatorBudget,
+                    cwd: this.config.cwd,
+                },
+            });
+            for await (const sdkMsg of response) {
+                if (sdkMsg.type === "result") {
+                    const resultMsg = sdkMsg;
+                    if (resultMsg.subtype === "success") {
+                        const report = (resultMsg.result || "No report").slice(0, 500);
+                        log(`Curator report: ${report}`);
+                        log(`Curator cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+                        this.totalCostUsd += resultMsg.total_cost_usd;
+                    }
+                    else {
+                        log(`Curator error: ${resultMsg.subtype}`);
+                    }
+                }
+            }
+        }
+        catch (err) {
+            log(`Curator error: ${err.message}`);
+        }
+        finally {
+            this.curatorBusy = false;
+            this.checkSessionBudget();
+        }
+    }
+    // ============================================
     // SHUTDOWN
     // ============================================
     async checkShutdownSignal() {
@@ -727,9 +995,15 @@ Build the initial session state document from this conversation.`;
             clearInterval(this.heartbeatTimer);
         if (this.compactorTimer)
             clearInterval(this.compactorTimer);
+        if (this.curatorTimer)
+            clearInterval(this.curatorTimer);
+        if (this.learnerBatchTimer)
+            clearTimeout(this.learnerBatchTimer);
         this.pollTimer = undefined;
         this.heartbeatTimer = undefined;
         this.compactorTimer = undefined;
+        this.curatorTimer = undefined;
+        this.learnerBatchTimer = undefined;
         // Update state — use a short timeout to avoid hanging
         const shutdownTimeout = setTimeout(() => {
             log("Shutdown timeout — force exit");
@@ -788,6 +1062,7 @@ async function main() {
         retrieverEnabled: getArg("retriever", "on") !== "off",
         learnerEnabled: getArg("learner", "on") !== "off",
         compactorEnabled: getArg("compactor", "on") !== "off",
+        curatorEnabled: getArg("curator", "off") !== "off",
         pollIntervalMs: 2000,
         heartbeatIntervalMs: 30000,
         compactorCheckIntervalMs: 30000, // Check every 30s
@@ -795,13 +1070,27 @@ async function main() {
         retrieverModel: "claude-haiku-4-5-20251001",
         learnerModel: "claude-haiku-4-5-20251001",
         compactorModel: "claude-haiku-4-5-20251001",
+        curatorModel: "claude-haiku-4-5-20251001",
+        curatorIntervalMs: parseInt(getArg("curator-interval", String(6 * 60 * 60 * 1000)), 10),
         mcpServerScript: getArg("mcp-server", path.join(__dirname, "..", "mcp", "memory_mcp_server.py")),
         pythonPath: getArg("python-path", process.env.PYTHON_PATH || "C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe"),
         transcriptPath: getArg("transcript-path", ""),
         projectSlug: getArg("project-slug", ""),
         lastCompactSize: parseInt(getArg("last-compact-size", "0"), 10) || 0,
+        // Budget config
+        retrieverBudget: parseFloat(getArg("retriever-budget", "0.50")),
+        learnerBudget: parseFloat(getArg("learner-budget", "0.50")),
+        compactorBudget: parseFloat(getArg("compactor-budget", "0.30")),
+        curatorBudget: parseFloat(getArg("curator-budget", "0.30")),
+        sessionBudget: parseFloat(getArg("session-budget", "5.00")),
+        // Batch config
+        batchWindowMs: parseInt(getArg("batch-window", "10000"), 10),
+        batchMinSize: parseInt(getArg("batch-min", "3"), 10),
+        batchMaxSize: parseInt(getArg("batch-max", "10"), 10),
     };
-    log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}`);
+    log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}, curator=${config.curatorEnabled}`);
+    log(`Budgets: retriever=$${config.retrieverBudget}, learner=$${config.learnerBudget}, compactor=$${config.compactorBudget}, curator=$${config.curatorBudget}, session=$${config.sessionBudget}`);
+    log(`Batch: window=${config.batchWindowMs}ms, min=${config.batchMinSize}, max=${config.batchMaxSize}`);
     if (config.transcriptPath) {
         log(`Transcript path: ${config.transcriptPath}`);
         try {

@@ -756,13 +756,13 @@ Test ultime qui combine TOUT : le systeme recoit une sequence longue d'observati
 
 | # | Test | Verification | Resultat |
 |---|------|-------------|----------|
-| 112 | Marathon learning | 10/10 observations traitees → learnings #127-129, patterns #35-36, errors #44-46, drilldown #55 | PASS |
-| 113 | Marathon retrieval | 4/5 prompts retrouves (1 SKIP sur flakey test prompt) | PASS |
-| 114 | Knowledge graph | 3/3 couches : 167 atomic, 33 patterns, 55 drilldowns | PASS |
-| 115 | Autonomous workflow | 6/6 aspects couverts (JVM, pool, Docker, monitoring, security, performance), 5 refs, 1360 chars | PASS |
-| 116 | Cost efficiency | $1.94 (limite $2.50), 17 API calls | PASS |
+| 112 | Marathon learning | 10/10 observations traitees → learnings #132-133, errors #50, patterns enrichis, drilldowns | PASS |
+| 113 | Marathon retrieval | 4/5 prompts retrouves (1 SKIP sur flakey test prompt) — Docker 743, JVM 430, 413 fix 512, perf 740 chars | PASS |
+| 114 | Knowledge graph | 3/3 couches : 174 atomic, 33 patterns, 55 drilldowns | PASS |
+| 115 | Autonomous workflow | 6/6 aspects couverts (JVM, pool, Docker, monitoring, security, performance), 6 unique refs, 1559 chars | PASS |
+| 116 | Cost efficiency | $1.78 (limite $2.50), 17 API calls | PASS |
 
-**Cout:** ~$1.94 | **Learnings:** Marathon test demonstrates full pipeline: learn → store → retrieve → synthesize. Retriever combines JVM sizing, HikariCP formula, Docker multi-stage, monitoring, security, and N+1 optimization in single response.
+**Cout:** ~$1.78 | **Learnings:** Marathon test demonstrates full pipeline: learn → store → retrieve → synthesize. Learner correctly SKIPs 5 duplicates and saves 3 new artifacts. Retriever combines JVM sizing, HikariCP formula, Docker multi-stage, monitoring, security, and N+1 optimization in single 1559-char response referencing 6 knowledge IDs.
 
 ---
 
@@ -1000,7 +1000,7 @@ L38:    "Je boucle"              — Autonomie complete : plan → research → 
 | 25 | Self-Correction | 3/3 | ALL PASS | ~$0.29 |
 | 26 | Generative Solving | 4/4 | ALL PASS | ~$0.43 |
 | 27 | Multi-Project | 4/4 | ALL PASS | ~$0.62 |
-| 28 | Full Autonomous | 5/5 | ALL PASS | ~$1.94 |
+| 28 | Full Autonomous | 5/5 | ALL PASS | ~$1.78 |
 | 29 | Auto-Documentation | 0/4 | A CREER | - |
 | 30 | Browser Capability Acquisition (+ Web Research) | 0/6 | A CREER | - |
 | 31 | Claude Code Session Spawning (+ Web Docs) | 0/6 | A CREER | - |
@@ -1011,7 +1011,7 @@ L38:    "Je boucle"              — Autonomie complete : plan → research → 
 | 36 | Self-Improvement (+ Web Solutions) | 0/5 | A CREER | - |
 | 37 | Teaching (+ Web Enrichment) | 0/6 | A CREER | - |
 | 38 | Full Autonomous Loop (+ Web Research) | 0/9 | A CREER | - |
-| **Total L0-L28** | | **116/116** | **ALL PASS** | **~$10.30** |
+| **Total L0-L28** | | **116/116** | **ALL PASS** | **~$10.14** |
 | **Total L0-L38** | | **116/178** | | |
 
 ---

@@ -61,9 +61,9 @@ CREATE INDEX IF NOT EXISTS idx_generated_tools_active ON generated_tools(is_acti
 
 CREATE OR REPLACE FUNCTION generated_tools_search_trigger() RETURNS trigger AS $$
 BEGIN
-    NEW.search_vector := to_tsvector('english',
-        COALESCE(NEW.name, '') || ' ' ||
-        COALESCE(NEW.description, ''));
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.name, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

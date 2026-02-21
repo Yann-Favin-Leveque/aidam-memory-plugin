@@ -219,6 +219,73 @@ async function run() {
   console.log("--- End Log ---\n");
 
   await killSession(SID, orch.proc);
+
+  // ═══════════════════════════════════════════════════════════
+  // BONUS: Compactor verification (optional, does not affect PASS/FAIL)
+  // ═══════════════════════════════════════════════════════════
+  console.log("\n=== Bonus: Compactor verification ===\n");
+  try {
+    const CSID = `level28-compactor-${Date.now()}`;
+    await cleanSession(CSID);
+
+    // Create a fake transcript file large enough to trigger compactor
+    const tmpDir = path.join(__dirname, "..", ".claude", "tmp");
+    try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
+    const fakeTranscript = path.join(tmpDir, `fake_transcript_${CSID}.jsonl`);
+
+    // Generate ~150k chars of fake conversation (~25k tokens) to trigger compaction
+    const lines = [];
+    for (let i = 0; i < 200; i++) {
+      lines.push(JSON.stringify({ type: "user", message: { content: `Tell me about topic ${i}. ${"x".repeat(300)}` } }));
+      lines.push(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `Here is information about topic ${i}. ${"y".repeat(400)}` }] } }));
+    }
+    fs.writeFileSync(fakeTranscript, lines.join("\n"), "utf-8");
+    console.log(`  Fake transcript: ${fakeTranscript} (${fs.statSync(fakeTranscript).size} bytes)`);
+
+    // Launch orchestrator with compactor=on and low threshold
+    const clf = `C:/Users/user/.claude/logs/aidam_orch_test28_compact.log`;
+    const cfd = fs.openSync(clf, "w");
+    const cproc = spawn("node", [ORCHESTRATOR,
+      `--session-id=${CSID}`,
+      "--cwd=C:/Users/user/IdeaProjects/ecopathsWebApp1b",
+      "--retriever=off", "--learner=off", "--compactor=on",
+      `--transcript-path=${fakeTranscript}`,
+      "--project-slug=test-compactor"
+    ], { stdio: ["ignore", cfd, cfd], detached: false });
+
+    const cStarted = await waitForStatus(CSID, "running", 20000);
+    console.log(`  Compactor orchestrator started: ${cStarted}`);
+
+    if (cStarted) {
+      // Wait for compactor to fire (check interval is 30s, but transcript is already large)
+      console.log("  Waiting up to 90s for compactor to fire...");
+      let compactorFired = false;
+      const start = Date.now();
+      while (Date.now() - start < 90000) {
+        const r = await dbQuery("SELECT state_text, version FROM session_state WHERE session_id=$1 ORDER BY version DESC LIMIT 1", [CSID]);
+        if (r.rows.length > 0 && r.rows[0].state_text && r.rows[0].state_text.length > 50) {
+          compactorFired = true;
+          const st = r.rows[0].state_text;
+          console.log(`  Compactor fired! Version: ${r.rows[0].version}, Length: ${st.length}`);
+          // Check for expected sections
+          const sections = ["IDENTITY", "TASK", "DECISION", "CONTEXT", "DYNAMIC"].filter(s => new RegExp(s, "i").test(st));
+          console.log(`  Sections found: ${sections.join(", ")} (${sections.length}/5)`);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      if (!compactorFired) console.log("  Compactor did not fire within 90s (not a failure, may need longer)");
+    }
+
+    await killSession(CSID, cproc);
+    await cleanSession(CSID);
+    await dbQuery("DELETE FROM session_state WHERE session_id=$1", [CSID]);
+    try { fs.unlinkSync(fakeTranscript); } catch {}
+    console.log("  Compactor verification done (informational only).\n");
+  } catch (err) {
+    console.log(`  Compactor verification error: ${err.message} (non-fatal)\n`);
+  }
+
   await cleanSession(SID);
   printSummary();
 }

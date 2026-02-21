@@ -153,45 +153,45 @@ CREATE INDEX IF NOT EXISTS idx_patterns_search ON patterns USING GIN(search_vect
 CREATE INDEX IF NOT EXISTS idx_learnings_search ON learnings USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS idx_errors_search ON errors_solutions USING GIN(search_vector);
 
--- Functions to update search vectors
+-- Functions to update search vectors (weighted: A=title, B=main, C=context, D=secondary)
 CREATE OR REPLACE FUNCTION tools_search_trigger() RETURNS trigger AS $$
 BEGIN
-    NEW.search_vector := to_tsvector('english',
-        COALESCE(NEW.name, '') || ' ' ||
-        COALESCE(NEW.description, '') || ' ' ||
-        COALESCE(NEW.use_cases, ''));
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.name, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(NEW.use_cases, '')), 'C');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION patterns_search_trigger() RETURNS trigger AS $$
 BEGIN
-    NEW.search_vector := to_tsvector('english',
-        COALESCE(NEW.name, '') || ' ' ||
-        COALESCE(NEW.problem, '') || ' ' ||
-        COALESCE(NEW.solution, '') || ' ' ||
-        COALESCE(NEW.context, ''));
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.name, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.problem, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(NEW.solution, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(NEW.context, '')), 'D');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION learnings_search_trigger() RETURNS trigger AS $$
 BEGIN
-    NEW.search_vector := to_tsvector('english',
-        COALESCE(NEW.topic, '') || ' ' ||
-        COALESCE(NEW.insight, '') || ' ' ||
-        COALESCE(NEW.context, ''));
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.topic, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.insight, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(NEW.context, '')), 'C');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION errors_search_trigger() RETURNS trigger AS $$
 BEGIN
-    NEW.search_vector := to_tsvector('english',
-        COALESCE(NEW.error_signature, '') || ' ' ||
-        COALESCE(NEW.error_message, '') || ' ' ||
-        COALESCE(NEW.root_cause, '') || ' ' ||
-        COALESCE(NEW.solution, ''));
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.error_signature, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.solution, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(NEW.error_message, '')), 'C') ||
+        setweight(to_tsvector('english', COALESCE(NEW.root_cause, '')), 'D');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -266,7 +266,7 @@ SELECT
 -- HELPER FUNCTIONS
 -- ============================================
 
--- Smart search across all tables
+-- Smart search across all tables (weighted: D=0.1, C=0.2, B=0.4, A=1.0)
 CREATE OR REPLACE FUNCTION smart_search(query_text TEXT, limit_per_table INTEGER DEFAULT 5)
 RETURNS TABLE(
     source_table TEXT,
@@ -278,34 +278,82 @@ RETURNS TABLE(
 BEGIN
     RETURN QUERY
     SELECT 'tools'::TEXT, t.id, t.name, LEFT(t.description, 100),
-           ts_rank(t.search_vector, plainto_tsquery('english', query_text))
+           ts_rank('{0.1, 0.2, 0.4, 1.0}', t.search_vector, plainto_tsquery('english', query_text))
     FROM tools t
     WHERE t.search_vector @@ plainto_tsquery('english', query_text)
-    ORDER BY ts_rank(t.search_vector, plainto_tsquery('english', query_text)) DESC
+    ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', t.search_vector, plainto_tsquery('english', query_text)) DESC
     LIMIT limit_per_table;
 
     RETURN QUERY
     SELECT 'patterns'::TEXT, p.id, p.name, LEFT(p.problem, 100),
-           ts_rank(p.search_vector, plainto_tsquery('english', query_text))
+           ts_rank('{0.1, 0.2, 0.4, 1.0}', p.search_vector, plainto_tsquery('english', query_text))
     FROM patterns p
     WHERE p.search_vector @@ plainto_tsquery('english', query_text)
-    ORDER BY ts_rank(p.search_vector, plainto_tsquery('english', query_text)) DESC
+    ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', p.search_vector, plainto_tsquery('english', query_text)) DESC
     LIMIT limit_per_table;
 
     RETURN QUERY
     SELECT 'learnings'::TEXT, l.id, l.topic, LEFT(l.insight, 100),
-           ts_rank(l.search_vector, plainto_tsquery('english', query_text))
+           ts_rank('{0.1, 0.2, 0.4, 1.0}', l.search_vector, plainto_tsquery('english', query_text))
     FROM learnings l
     WHERE l.search_vector @@ plainto_tsquery('english', query_text)
-    ORDER BY ts_rank(l.search_vector, plainto_tsquery('english', query_text)) DESC
+    ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', l.search_vector, plainto_tsquery('english', query_text)) DESC
     LIMIT limit_per_table;
 
     RETURN QUERY
     SELECT 'errors'::TEXT, e.id, e.error_signature, LEFT(e.solution, 100),
-           ts_rank(e.search_vector, plainto_tsquery('english', query_text))
+           ts_rank('{0.1, 0.2, 0.4, 1.0}', e.search_vector, plainto_tsquery('english', query_text))
     FROM errors_solutions e
     WHERE e.search_vector @@ plainto_tsquery('english', query_text)
-    ORDER BY ts_rank(e.search_vector, plainto_tsquery('english', query_text)) DESC
+    ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', e.search_vector, plainto_tsquery('english', query_text)) DESC
+    LIMIT limit_per_table;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Fuzzy search across all tables (pg_trgm fallback when FTS returns 0 results)
+CREATE OR REPLACE FUNCTION fuzzy_search(query_text TEXT, limit_per_table INTEGER DEFAULT 5, threshold REAL DEFAULT 0.3)
+RETURNS TABLE(
+    source_table TEXT,
+    id INTEGER,
+    title TEXT,
+    preview TEXT,
+    rank REAL
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 'tools'::TEXT, t.id, t.name, LEFT(t.description, 100),
+           similarity(t.name, query_text)
+    FROM tools t
+    WHERE similarity(t.name, query_text) > threshold
+       OR similarity(t.description, query_text) > threshold
+    ORDER BY greatest(similarity(t.name, query_text), similarity(t.description, query_text)) DESC
+    LIMIT limit_per_table;
+
+    RETURN QUERY
+    SELECT 'patterns'::TEXT, p.id, p.name, LEFT(p.problem, 100),
+           similarity(p.name, query_text)
+    FROM patterns p
+    WHERE similarity(p.name, query_text) > threshold
+       OR similarity(p.problem, query_text) > threshold
+    ORDER BY greatest(similarity(p.name, query_text), similarity(p.problem, query_text)) DESC
+    LIMIT limit_per_table;
+
+    RETURN QUERY
+    SELECT 'learnings'::TEXT, l.id, l.topic, LEFT(l.insight, 100),
+           similarity(l.topic, query_text)
+    FROM learnings l
+    WHERE similarity(l.topic, query_text) > threshold
+       OR similarity(l.insight, query_text) > threshold
+    ORDER BY greatest(similarity(l.topic, query_text), similarity(l.insight, query_text)) DESC
+    LIMIT limit_per_table;
+
+    RETURN QUERY
+    SELECT 'errors'::TEXT, e.id, e.error_signature, LEFT(e.solution, 100),
+           similarity(e.error_signature, query_text)
+    FROM errors_solutions e
+    WHERE similarity(e.error_signature, query_text) > threshold
+       OR similarity(e.solution, query_text) > threshold
+    ORDER BY greatest(similarity(e.error_signature, query_text), similarity(e.solution, query_text)) DESC
     LIMIT limit_per_table;
 END;
 $$ LANGUAGE plpgsql;

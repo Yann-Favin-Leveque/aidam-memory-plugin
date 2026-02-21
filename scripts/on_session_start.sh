@@ -34,9 +34,17 @@ fi
 RETRIEVER_ENABLED="${AIDAM_MEMORY_RETRIEVER:-on}"
 LEARNER_ENABLED="${AIDAM_MEMORY_LEARNER:-on}"
 COMPACTOR_ENABLED="${AIDAM_MEMORY_COMPACTOR:-on}"
+CURATOR_ENABLED="${AIDAM_MEMORY_CURATOR:-off}"
+
+# Budget env vars
+RETRIEVER_BUDGET="${AIDAM_RETRIEVER_BUDGET:-0.50}"
+LEARNER_BUDGET="${AIDAM_LEARNER_BUDGET:-0.50}"
+COMPACTOR_BUDGET="${AIDAM_COMPACTOR_BUDGET:-0.30}"
+CURATOR_BUDGET="${AIDAM_CURATOR_BUDGET:-0.30}"
+SESSION_BUDGET="${AIDAM_SESSION_BUDGET:-5.00}"
 
 # If all are off, do nothing
-if [ "$RETRIEVER_ENABLED" = "off" ] && [ "$LEARNER_ENABLED" = "off" ] && [ "$COMPACTOR_ENABLED" = "off" ]; then
+if [ "$RETRIEVER_ENABLED" = "off" ] && [ "$LEARNER_ENABLED" = "off" ] && [ "$COMPACTOR_ENABLED" = "off" ] && [ "$CURATOR_ENABLED" = "off" ]; then
   echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"[AIDAM Memory: disabled]"}}'
   exit 0
 fi
@@ -124,9 +132,15 @@ node "$ORCHESTRATOR_SCRIPT" \
   "--retriever=${RETRIEVER_ENABLED}" \
   "--learner=${LEARNER_ENABLED}" \
   "--compactor=${COMPACTOR_ENABLED}" \
+  "--curator=${CURATOR_ENABLED}" \
   "--transcript-path=${TRANSCRIPT_PATH}" \
   "--project-slug=${PROJECT_SLUG}" \
   "--last-compact-size=${LAST_COMPACT_SIZE}" \
+  "--retriever-budget=${RETRIEVER_BUDGET}" \
+  "--learner-budget=${LEARNER_BUDGET}" \
+  "--compactor-budget=${COMPACTOR_BUDGET}" \
+  "--curator-budget=${CURATOR_BUDGET}" \
+  "--session-budget=${SESSION_BUDGET}" \
   > "$LOG_FILE" 2>&1 &
 
 ORCH_PID=$!
@@ -158,6 +172,7 @@ else
   if [ "$RETRIEVER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, retriever=on"; fi
   if [ "$LEARNER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, learner=on"; fi
   if [ "$COMPACTOR_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, compactor=on"; fi
+  if [ "$CURATOR_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, curator=on"; fi
   if [ "$STATUS" != "running" ]; then CONTEXT="${CONTEXT}, initializing..."; fi
   CONTEXT="${CONTEXT}]"
   cat <<EOF

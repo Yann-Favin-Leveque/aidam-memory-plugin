@@ -102,7 +102,7 @@ def search_tools(query: str, limit: int = 10) -> List[Dict]:
     return execute_query("""
         SELECT * FROM tools
         WHERE search_vector @@ plainto_tsquery('english', %s)
-        ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
+        ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', search_vector, plainto_tsquery('english', %s)) DESC
         LIMIT %s
     """, (query, query, limit))
 
@@ -146,7 +146,7 @@ def search_patterns(query: str, limit: int = 10) -> List[Dict]:
     return execute_query("""
         SELECT * FROM patterns
         WHERE search_vector @@ plainto_tsquery('english', %s)
-        ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
+        ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', search_vector, plainto_tsquery('english', %s)) DESC
         LIMIT %s
     """, (query, query, limit))
 
@@ -171,7 +171,7 @@ def search_learnings(query: str, limit: int = 10) -> List[Dict]:
     return execute_query("""
         SELECT * FROM learnings
         WHERE search_vector @@ plainto_tsquery('english', %s)
-        ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
+        ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', search_vector, plainto_tsquery('english', %s)) DESC
         LIMIT %s
     """, (query, query, limit))
 
@@ -196,7 +196,7 @@ def search_errors(query: str, limit: int = 10) -> List[Dict]:
     return execute_query("""
         SELECT * FROM errors_solutions
         WHERE search_vector @@ plainto_tsquery('english', %s)
-        ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
+        ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}', search_vector, plainto_tsquery('english', %s)) DESC
         LIMIT %s
     """, (query, query, limit))
 
@@ -293,14 +293,66 @@ def end_session(session_id: int, summary: str = None,
 # INTELLIGENT SEARCH
 # ============================================
 
+def fuzzy_search_tools(query: str, limit: int = 10, threshold: float = 0.3) -> List[Dict]:
+    """Fuzzy search tools using pg_trgm similarity (fallback for FTS misses)."""
+    return execute_query("""
+        SELECT *, greatest(similarity(name, %s), similarity(COALESCE(description,''), %s)) AS sim_score
+        FROM tools
+        WHERE similarity(name, %s) > %s OR similarity(COALESCE(description,''), %s) > %s
+        ORDER BY greatest(similarity(name, %s), similarity(COALESCE(description,''), %s)) DESC
+        LIMIT %s
+    """, (query, query, query, threshold, query, threshold, query, query, limit))
+
+def fuzzy_search_patterns(query: str, limit: int = 10, threshold: float = 0.3) -> List[Dict]:
+    """Fuzzy search patterns using pg_trgm similarity."""
+    return execute_query("""
+        SELECT *, greatest(similarity(name, %s), similarity(COALESCE(problem,''), %s)) AS sim_score
+        FROM patterns
+        WHERE similarity(name, %s) > %s OR similarity(COALESCE(problem,''), %s) > %s
+        ORDER BY greatest(similarity(name, %s), similarity(COALESCE(problem,''), %s)) DESC
+        LIMIT %s
+    """, (query, query, query, threshold, query, threshold, query, query, limit))
+
+def fuzzy_search_learnings(query: str, limit: int = 10, threshold: float = 0.3) -> List[Dict]:
+    """Fuzzy search learnings using pg_trgm similarity."""
+    return execute_query("""
+        SELECT *, greatest(similarity(topic, %s), similarity(COALESCE(insight,''), %s)) AS sim_score
+        FROM learnings
+        WHERE similarity(topic, %s) > %s OR similarity(COALESCE(insight,''), %s) > %s
+        ORDER BY greatest(similarity(topic, %s), similarity(COALESCE(insight,''), %s)) DESC
+        LIMIT %s
+    """, (query, query, query, threshold, query, threshold, query, query, limit))
+
+def fuzzy_search_errors(query: str, limit: int = 10, threshold: float = 0.3) -> List[Dict]:
+    """Fuzzy search errors using pg_trgm similarity."""
+    return execute_query("""
+        SELECT *, greatest(similarity(error_signature, %s), similarity(COALESCE(solution,''), %s)) AS sim_score
+        FROM errors_solutions
+        WHERE similarity(error_signature, %s) > %s OR similarity(COALESCE(solution,''), %s) > %s
+        ORDER BY greatest(similarity(error_signature, %s), similarity(COALESCE(solution,''), %s)) DESC
+        LIMIT %s
+    """, (query, query, query, threshold, query, threshold, query, query, limit))
+
 def smart_search(query: str, limit_per_table: int = 5) -> Dict[str, List[Dict]]:
-    """Search across all knowledge tables."""
-    return {
+    """Search across all knowledge tables. FTS first, pg_trgm fuzzy fallback if empty."""
+    results = {
         'tools': search_tools(query, limit_per_table),
         'patterns': search_patterns(query, limit_per_table),
         'learnings': search_learnings(query, limit_per_table),
         'errors': search_errors(query, limit_per_table)
     }
+    total = sum(len(v) for v in results.values())
+    if total == 0:
+        results = {
+            'tools': fuzzy_search_tools(query, limit_per_table),
+            'patterns': fuzzy_search_patterns(query, limit_per_table),
+            'learnings': fuzzy_search_learnings(query, limit_per_table),
+            'errors': fuzzy_search_errors(query, limit_per_table),
+            '_search_mode': 'fuzzy'
+        }
+    else:
+        results['_search_mode'] = 'fts'
+    return results
 
 def get_context_for_project(project_id: int) -> Dict[str, Any]:
     """Get all relevant context for a project."""
