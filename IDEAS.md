@@ -1,5 +1,7 @@
 # AIDAM Memory Plugin — Ideas & Future Improvements
 
+
+
 ## PostgreSQL Search Improvements
 
 ### Stemming francais
@@ -36,12 +38,16 @@
 - Cache les resultats de retrieval pour des prompts similaires (embeddings?)
 - Eviterait les appels redondants dans une meme session
 
-### Retriever multi-strategy
-- Au lieu de toujours faire `plainto_tsquery`, le Retriever choisit sa strategie :
-  - **Exact match** pour les error signatures connues
-  - **Fuzzy** (pg_trgm) pour les descriptions vagues ou avec fautes
-  - **Project-scoped** quand un projet est mentionne dans le prompt
-  - **Recency-biased** quand le prompt parle de "recent" ou "last time"
+### ~~Retriever multi-strategy~~ → Implémenté (Dual Retriever A/B)
+> Remplacé par 2 agents Haiku parallèles : A (keyword FTS) + B (cascade via knowledge_index).
+> Chacun utilise des tool calls parallèles et maxTurns=15.
+
+### Session-Aware Retriever (v3)
+- La session principale devrait savoir qu'elle a des retrievers en background
+- Pourrait planifier en sachant qu'un retrieval arrive (commencer à poser des bases)
+- Tool MCP pour déclencher un retrieval à la demande depuis la session principale
+- Exemple : "J'ai besoin du pattern d'auth JWT" → trigger direct au retriever
+- Utile quand la session a une grosse réflexion en cours
 
 ## Intelligence & Analytics
 

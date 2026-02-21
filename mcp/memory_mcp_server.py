@@ -151,6 +151,7 @@ def _with_pagination(properties: dict) -> dict:
 WRITE_TOOLS = {
     "memory_save_learning", "memory_save_error", "memory_save_pattern",
     "memory_log_session", "memory_add_project", "memory_drilldown_save",
+    "memory_index_upsert",
     "db.execute_migration_scoped", "db_execute"
 }
 
@@ -582,6 +583,76 @@ async def list_tools() -> list[Tool]:
             }
         ),
         # ============================================
+        # KNOWLEDGE INDEX TOOLS
+        # ============================================
+        Tool(
+            name="memory_index_search",
+            description="Full-text search in the knowledge index. Returns matching entries with domain, title, summary, and relevance rank.",
+            inputSchema={
+                "type": "object",
+                "properties": _with_pagination({
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (keywords)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default: 20)",
+                        "default": 20
+                    }
+                }),
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="memory_index_domains",
+            description="List knowledge domains with entry counts and sample titles. Optionally filter by a search query.",
+            inputSchema={
+                "type": "object",
+                "properties": _with_pagination({
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search query to filter domains"
+                    }
+                })
+            }
+        ),
+        Tool(
+            name="memory_index_upsert",
+            description="Upsert an entry in the knowledge index. Creates or updates based on (source_table, source_id) unique constraint.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_table": {
+                        "type": "string",
+                        "description": "Source table name (e.g., 'learnings', 'patterns')"
+                    },
+                    "source_id": {
+                        "type": "integer",
+                        "description": "ID of the source row"
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "Knowledge domain (e.g., 'physics', 'programming', 'architecture')"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the index entry"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Summary text (used for full-text search)"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for categorization (optional)"
+                    }
+                },
+                "required": ["source_table", "source_id", "domain", "title", "summary"]
+            }
+        ),
+        # ============================================
         # PROJECT-SPECIFIC TOOLS
         # ============================================
         Tool(
@@ -660,7 +731,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="db_execute",
-            description="Execute UPDATE, INSERT, or DELETE on memory tables. Restricted to safe tables: projects, learnings, errors_solutions, patterns, sessions, user_preferences, knowledge_details, memory_meta. Returns affected row count.",
+            description="Execute UPDATE, INSERT, or DELETE on memory tables. Restricted to safe tables: projects, learnings, errors_solutions, patterns, sessions, user_preferences, knowledge_details, knowledge_index, memory_meta. Returns affected row count.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -885,6 +956,42 @@ async def handle_tool(name: str, args: dict) -> str:
         }, max_chars, offset, filter_text)
 
     # ============================================
+    # KNOWLEDGE INDEX HANDLERS
+    # ============================================
+    elif name == "memory_index_search":
+        query = args["query"]
+        limit = args.get("limit", 20)
+        results = mem.search_knowledge_index(query, limit)
+        return format_result({
+            "query": query,
+            "results": results,
+            "count": len(results)
+        }, max_chars, offset, filter_text)
+
+    elif name == "memory_index_domains":
+        query = args.get("query")
+        domains = mem.get_knowledge_domains(query)
+        return format_result({
+            "query": query,
+            "domains": domains,
+            "count": len(domains)
+        }, max_chars, offset, filter_text)
+
+    elif name == "memory_index_upsert":
+        mem.upsert_knowledge_index(
+            source_table=args["source_table"],
+            source_id=args["source_id"],
+            domain=args["domain"],
+            title=args["title"],
+            summary=args["summary"],
+            tags=args.get("tags")
+        )
+        return format_result({
+            "success": True,
+            "message": f"Knowledge index entry upserted for {args['source_table']}#{args['source_id']}"
+        })
+
+    # ============================================
     # PROJECT-SPECIFIC HANDLERS
     # ============================================
     elif name == "memory_get_project_learnings":
@@ -934,7 +1041,8 @@ async def handle_tool(name: str, args: dict) -> str:
         # Security: only allow specific tables
         ALLOWED_TABLES = {
             'projects', 'learnings', 'errors_solutions', 'patterns',
-            'sessions', 'user_preferences', 'knowledge_details', 'memory_meta'
+            'sessions', 'user_preferences', 'knowledge_details', 'knowledge_index',
+            'memory_meta'
         }
 
         # Parse and validate

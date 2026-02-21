@@ -1,24 +1,26 @@
 # AIDAM Memory Plugin
 
-Cognitive memory system for Claude Code. Four persistent background agents (Retriever, Learner, Compactor, Curator) automatically search, save, compact, and maintain knowledge, injecting relevant context into your main Claude Code session.
+Cognitive memory system for Claude Code. Five persistent background agents (2 Retrievers, Learner, Compactor, Curator) automatically search, save, compact, and maintain knowledge, injecting relevant context into your main Claude Code session.
 
 ## Architecture
 
 ```
 Main Session (user)
   ├── SessionStart hook → launches orchestrator
-  ├── UserPromptSubmit hook → polls retrieval_inbox → injects context
+  ├── UserPromptSubmit hook → polls retrieval_inbox → merges + injects context
   ├── PostToolUse hook (async) → pushes to cognitive_inbox
   └── SessionEnd hook → stops orchestrator
 
 Orchestrator (Node.js, Agent SDK)
-  ├── Retriever (persistent)  → searches memory DB → writes results to retrieval_inbox
-  ├── Learner (persistent)    → extracts knowledge → saves to memory DB (batch mode)
-  ├── Compactor (persistent)  → monitors transcript size → writes session summaries
-  └── Curator (scheduled)     → merges duplicates, archives stale, detects contradictions
+  ├── Retriever A — Keyword (persistent)  → FTS/fuzzy search across all tables
+  ├── Retriever B — Cascade (persistent)  → knowledge_index → domain → drill down
+  ├── Learner (persistent)                → extracts knowledge → saves to memory DB + knowledge_index
+  ├── Compactor (persistent)              → monitors transcript size → writes session summaries
+  └── Curator (scheduled)                 → merges duplicates, archives stale, detects contradictions
 
 Memory DB (PostgreSQL)
   ├── learnings, patterns, errors_solutions, tools  (knowledge tables)
+  ├── knowledge_index                                (domain summary for cascade retrieval)
   ├── cognitive_inbox → retrieval_inbox              (queue tables)
   ├── session_state                                  (compactor output)
   └── Full-text search (weighted tsvector) + fuzzy search (pg_trgm)
@@ -28,10 +30,20 @@ Memory DB (PostgreSQL)
 
 | Agent | Role | Model | Trigger |
 |-------|------|-------|---------|
-| **Retriever** | Searches memory for relevant context when user submits a prompt | Configurable | Every user prompt |
-| **Learner** | Extracts knowledge from tool observations (batch: groups 3-10 observations) | Configurable | Tool use events |
-| **Compactor** | Summarizes conversation into structured state for `/clear` re-injection | Configurable | Transcript size threshold (~20k tokens) |
+| **Retriever A (Keyword)** | Broad FTS/fuzzy search across all memory tables with parallel tool calls | Haiku | Every user prompt |
+| **Retriever B (Cascade)** | Searches knowledge_index summary first, identifies relevant domains, then drills down | Haiku | Every user prompt |
+| **Learner** | Extracts knowledge from tool observations (batch mode) + indexes in knowledge_index | Haiku | Tool use events |
+| **Compactor** | Summarizes conversation into structured state for `/clear` re-injection | Haiku | Transcript size threshold (~20k tokens) |
 | **Curator** | DB maintenance: merge duplicates (>80% overlap), archive stale entries, detect contradictions | Haiku | Scheduled interval (default: 6h) or on-demand |
+
+### Dual Retriever Architecture
+
+Both retrievers run **in parallel** on every user prompt, using different strategies:
+
+- **Retriever A (Keyword)**: Direct FTS + fuzzy search across learnings, patterns, errors, tools. Uses parallel tool calls (3-5 searches in a single turn).
+- **Retriever B (Cascade)**: Starts with `knowledge_index` (domain summary table), identifies relevant knowledge domains, then drills down into specific entries.
+
+Results are **injected as they arrive** (no waiting for both). When one retriever injects, the other receives a `[PEER_INJECTED]` notification to avoid duplicating content. The hook merges multiple results before injecting into the main session.
 
 ## Prerequisites
 
@@ -79,6 +91,7 @@ The plugin requires a PostgreSQL database called `claude_memory` with:
 2. **Plugin queue tables** (cognitive_inbox, retrieval_inbox, orchestrator_state, session_state) — created by `db/migration.sql`
 3. **Weighted search triggers** — created by `db/migration_v2_weighted_search.sql`
 4. **Fuzzy search indexes** (pg_trgm) — created by `db/migration_v3_trigram.sql`
+5. **Knowledge index** (domain summary for cascade retrieval) — created by `db/migration_v4_knowledge_index.sql`
 
 ## Installation
 
@@ -113,6 +126,8 @@ PGPASSWORD=$PGPASSWORD psql -U postgres -h localhost -d claude_memory \
   -f db/migration_v2_weighted_search.sql
 PGPASSWORD=$PGPASSWORD psql -U postgres -h localhost -d claude_memory \
   -f db/migration_v3_trigram.sql
+PGPASSWORD=$PGPASSWORD psql -U postgres -h localhost -d claude_memory \
+  -f db/migration_v4_knowledge_index.sql
 
 # 8. Create generated tools directory
 mkdir -p ~/.claude/generated_tools
@@ -135,7 +150,8 @@ Toggle features and configure budgets in `~/.claude/settings.json`:
     "AIDAM_MEMORY_COMPACTOR": "on",
     "AIDAM_MEMORY_CURATOR": "off",
     "AIDAM_MEMORY_DEBUG": "off",
-    "AIDAM_RETRIEVER_BUDGET": "0.50",
+    "AIDAM_RETRIEVER_A_BUDGET": "0.50",
+    "AIDAM_RETRIEVER_B_BUDGET": "0.50",
     "AIDAM_LEARNER_BUDGET": "0.50",
     "AIDAM_COMPACTOR_BUDGET": "0.30",
     "AIDAM_CURATOR_BUDGET": "0.30",
@@ -151,7 +167,8 @@ Toggle features and configure budgets in `~/.claude/settings.json`:
 | `AIDAM_MEMORY_COMPACTOR` | `on` | Enable/disable the Compactor agent |
 | `AIDAM_MEMORY_CURATOR` | `off` | Enable/disable the Curator agent |
 | `AIDAM_MEMORY_DEBUG` | `off` | Verbose logging |
-| `AIDAM_RETRIEVER_BUDGET` | `0.50` | Per-call budget for Retriever ($) |
+| `AIDAM_RETRIEVER_A_BUDGET` | `0.50` | Per-call budget for Keyword Retriever ($) |
+| `AIDAM_RETRIEVER_B_BUDGET` | `0.50` | Per-call budget for Cascade Retriever ($) |
 | `AIDAM_LEARNER_BUDGET` | `0.50` | Per-call budget for Learner ($) |
 | `AIDAM_COMPACTOR_BUDGET` | `0.30` | Per-call budget for Compactor ($) |
 | `AIDAM_CURATOR_BUDGET` | `0.30` | Per-call budget for Curator ($) |
@@ -200,9 +217,9 @@ Use `/smart-compact` by default to prevent accidental context loss when the plug
 
 ## Search
 
-The memory system uses two search strategies:
+The memory system uses three search strategies:
 
-1. **Weighted Full-Text Search** (primary) — PostgreSQL `tsvector` with `setweight()`:
+1. **Weighted Full-Text Search** (Retriever A primary) — PostgreSQL `tsvector` with `setweight()`:
    - **A (1.0)**: titles/names (highest relevance)
    - **B (0.4)**: main content (descriptions, insights, solutions)
    - **C (0.2)**: context fields
@@ -212,6 +229,11 @@ The memory system uses two search strategies:
    - Activated when FTS returns 0 results
    - Handles typos and partial matches (threshold: 0.3 similarity)
    - GIN trigram indexes on name/title/topic/signature fields
+
+3. **Cascade Search** (Retriever B) — `knowledge_index` summary table:
+   - Domain-level overview first (what knowledge domains exist)
+   - Then drill down into specific entries
+   - Auto-populated by the Learner on every save
 
 ## Cleanup
 
@@ -282,7 +304,8 @@ aidam-memory-plugin/
 │   ├── inject_state.py                  # Injects compactor state on /clear
 │   └── test_level{1-39}.js             # Test suite (184 tests)
 ├── prompts/
-│   ├── retriever_system.md              # Retriever agent instructions
+│   ├── retriever_keyword_system.md      # Retriever A (Keyword) agent instructions
+│   ├── retriever_cascade_system.md      # Retriever B (Cascade) agent instructions
 │   ├── learner_system.md                # Learner agent instructions
 │   ├── compactor_system.md              # Compactor agent instructions
 │   └── curator_system.md               # Curator agent instructions
@@ -293,7 +316,8 @@ aidam-memory-plugin/
 ├── db/
 │   ├── migration.sql                    # Queue tables + cleanup functions
 │   ├── migration_v2_weighted_search.sql # Weighted tsvector triggers
-│   └── migration_v3_trigram.sql         # pg_trgm fuzzy search indexes
+│   ├── migration_v3_trigram.sql         # pg_trgm fuzzy search indexes
+│   └── migration_v4_knowledge_index.sql # Knowledge index for cascade retrieval
 ├── config/defaults.json                 # Default configuration (agents, budgets, batch)
 ├── tools/cleanup_memory.sh              # Manual cleanup script
 ├── TEST_PLAN.md                         # Full test plan (184 tests, levels 0-39)

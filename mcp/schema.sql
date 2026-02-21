@@ -137,6 +137,21 @@ CREATE TABLE IF NOT EXISTS errors_solutions (
     occurrence_count INTEGER DEFAULT 1
 );
 
+-- KNOWLEDGE INDEX: Summary table for fast domain-based retrieval (cascade search)
+CREATE TABLE IF NOT EXISTS knowledge_index (
+    id SERIAL PRIMARY KEY,
+    domain TEXT NOT NULL,                -- e.g. "spring-security", "postgresql", "docker", "java"
+    source_table TEXT NOT NULL,          -- 'learnings', 'patterns', 'errors_solutions', 'tools'
+    source_id INTEGER NOT NULL,          -- ID in the source table
+    title TEXT NOT NULL,                 -- Short title (topic/name/error_signature)
+    summary TEXT NOT NULL,               -- 1-2 sentence summary
+    tags JSONB,                          -- Aggregated tags
+    search_vector TSVECTOR,              -- FTS on domain + title + summary
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source_table, source_id)
+);
+
 -- ============================================
 -- FULL-TEXT SEARCH (PostgreSQL tsvector)
 -- ============================================
@@ -212,6 +227,25 @@ FOR EACH ROW EXECUTE FUNCTION learnings_search_trigger();
 DROP TRIGGER IF EXISTS errors_search_update ON errors_solutions;
 CREATE TRIGGER errors_search_update BEFORE INSERT OR UPDATE ON errors_solutions
 FOR EACH ROW EXECUTE FUNCTION errors_search_trigger();
+
+-- Knowledge Index FTS trigger
+CREATE OR REPLACE FUNCTION ki_search_trigger() RETURNS trigger AS $$
+BEGIN
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.domain, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.summary, '')), 'B');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS ki_search_update ON knowledge_index;
+CREATE TRIGGER ki_search_update BEFORE INSERT OR UPDATE ON knowledge_index
+FOR EACH ROW EXECUTE FUNCTION ki_search_trigger();
+
+CREATE INDEX IF NOT EXISTS idx_ki_search ON knowledge_index USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS idx_ki_domain ON knowledge_index(domain);
+CREATE INDEX IF NOT EXISTS idx_ki_source ON knowledge_index(source_table, source_id);
 
 -- ============================================
 -- INDEXES FOR PERFORMANCE

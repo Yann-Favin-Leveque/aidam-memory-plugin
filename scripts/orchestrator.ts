@@ -38,7 +38,8 @@ interface OrchestratorConfig {
   projectSlug: string;
   lastCompactSize: number;
   // Budget config
-  retrieverBudget: number;
+  retrieverABudget: number;
+  retrieverBBudget: number;
   learnerBudget: number;
   compactorBudget: number;
   curatorBudget: number;
@@ -117,7 +118,8 @@ class SlidingWindow {
 class Orchestrator {
   private config: OrchestratorConfig;
   private db: Client;
-  private retrieverSessionId: string | undefined;
+  private retrieverASessionId: string | undefined;  // Keyword retriever
+  private retrieverBSessionId: string | undefined;  // Cascade retriever
   private learnerSessionId: string | undefined;
   private compactorSessionId: string | undefined;
   private curatorSessionId: string | undefined;
@@ -127,7 +129,8 @@ class Orchestrator {
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private compactorTimer: ReturnType<typeof setInterval> | undefined;
   private curatorTimer: ReturnType<typeof setInterval> | undefined;
-  private retrieverBusy: boolean = false;
+  private retrieverABusy: boolean = false;
+  private retrieverBBusy: boolean = false;
   private learnerBusy: boolean = false;
   private compactorBusy: boolean = false;
   private curatorBusy: boolean = false;
@@ -165,7 +168,8 @@ class Orchestrator {
     // Initialize sessions
     const initPromises: Promise<void>[] = [];
     if (this.config.retrieverEnabled) {
-      initPromises.push(this.initRetriever());
+      initPromises.push(this.initRetrieverA());
+      initPromises.push(this.initRetrieverB());
     }
     if (this.config.learnerEnabled) {
       initPromises.push(this.initLearner());
@@ -184,7 +188,7 @@ class Orchestrator {
          retriever_session_id = $2, learner_session_id = $3,
          last_heartbeat_at = CURRENT_TIMESTAMP
        WHERE session_id = $1`,
-      [this.config.sessionId, this.retrieverSessionId || null, this.learnerSessionId || null]
+      [this.config.sessionId, this.retrieverASessionId || this.retrieverBSessionId || null, this.learnerSessionId || null]
     );
 
     this.running = true;
@@ -205,7 +209,7 @@ class Orchestrator {
       this.shutdown();
     });
 
-    log(`Orchestrator running. Retriever: ${this.retrieverSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}, Compactor: ${this.compactorSessionId || "disabled"}, Curator: ${this.curatorSessionId || "disabled"}`);
+    log(`Orchestrator running. RetrieverA: ${this.retrieverASessionId || "disabled"}, RetrieverB: ${this.retrieverBSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}, Compactor: ${this.compactorSessionId || "disabled"}, Curator: ${this.curatorSessionId || "disabled"}`);
   }
 
   private getMcpConfig() {
@@ -221,37 +225,51 @@ class Orchestrator {
     };
   }
 
-  private async initRetriever(): Promise<void> {
-    log("Initializing Retriever session...");
-    const promptPath = path.join(__dirname, "..", "prompts", "retriever_system.md");
+  // Shared tools available to both retrievers
+  private get retrieverBaseTools(): string[] {
+    return [
+      "mcp__memory__memory_search",
+      "mcp__memory__memory_get_project",
+      "mcp__memory__memory_list_projects",
+      "mcp__memory__memory_search_errors",
+      "mcp__memory__memory_search_patterns",
+      "mcp__memory__memory_get_project_learnings",
+      "mcp__memory__memory_get_sessions",
+      "mcp__memory__memory_get_recent_learnings",
+      "mcp__memory__memory_get_preferences",
+      "mcp__memory__memory_drilldown_list",
+      "mcp__memory__memory_drilldown_get",
+      "mcp__memory__memory_drilldown_search",
+      "mcp__memory__db_select",
+    ];
+  }
+
+  // Additional tools for cascade retriever (knowledge_index)
+  private get retrieverCascadeTools(): string[] {
+    return [
+      ...this.retrieverBaseTools,
+      "mcp__memory__memory_index_search",
+      "mcp__memory__memory_index_domains",
+    ];
+  }
+
+  private async initRetrieverA(): Promise<void> {
+    log("Initializing Retriever A (Keyword)...");
+    const promptPath = path.join(__dirname, "..", "prompts", "retriever_keyword_system.md");
     let systemPrompt: string;
     try {
       systemPrompt = fs.readFileSync(promptPath, "utf-8");
     } catch {
-      systemPrompt = "You are a memory retrieval agent. Search the MCP memory tools for relevant context when given a user prompt. Respond with SKIP if nothing relevant.";
+      systemPrompt = "You are a keyword memory retrieval agent. Search the MCP memory tools for relevant context when given a user prompt. Use parallel tool calls. Respond with SKIP if nothing relevant.";
     }
 
     try {
       const response = query({
-        prompt: systemPrompt + "\n\n[INIT] Retriever session initialized. Waiting for queries. Respond with READY.",
+        prompt: systemPrompt + "\n\n[INIT] Keyword Retriever session initialized. Waiting for queries. Respond with READY.",
         options: {
           model: this.config.retrieverModel,
           mcpServers: this.getMcpConfig(),
-          allowedTools: [
-            "mcp__memory__memory_search",
-            "mcp__memory__memory_get_project",
-            "mcp__memory__memory_list_projects",
-            "mcp__memory__memory_search_errors",
-            "mcp__memory__memory_search_patterns",
-            "mcp__memory__memory_get_project_learnings",
-            "mcp__memory__memory_get_sessions",
-            "mcp__memory__memory_get_recent_learnings",
-            "mcp__memory__memory_get_preferences",
-            "mcp__memory__memory_drilldown_list",
-            "mcp__memory__memory_drilldown_get",
-            "mcp__memory__memory_drilldown_search",
-            "mcp__memory__db_select",
-          ],
+          allowedTools: this.retrieverBaseTools,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
           maxTurns: 2,
@@ -264,12 +282,50 @@ class Orchestrator {
 
       for await (const msg of response) {
         if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
-          this.retrieverSessionId = msg.session_id;
-          log(`Retriever session ID: ${this.retrieverSessionId}`);
+          this.retrieverASessionId = msg.session_id;
+          log(`Retriever A session ID: ${this.retrieverASessionId}`);
         }
       }
     } catch (err: any) {
-      log(`Retriever init error: ${err.message}`);
+      log(`Retriever A init error: ${err.message}`);
+    }
+  }
+
+  private async initRetrieverB(): Promise<void> {
+    log("Initializing Retriever B (Cascade)...");
+    const promptPath = path.join(__dirname, "..", "prompts", "retriever_cascade_system.md");
+    let systemPrompt: string;
+    try {
+      systemPrompt = fs.readFileSync(promptPath, "utf-8");
+    } catch {
+      systemPrompt = "You are a cascade memory retrieval agent. Search knowledge_index first, then drill down. Use parallel tool calls. Respond with SKIP if nothing relevant.";
+    }
+
+    try {
+      const response = query({
+        prompt: systemPrompt + "\n\n[INIT] Cascade Retriever session initialized. Waiting for queries. Respond with READY.",
+        options: {
+          model: this.config.retrieverModel,
+          mcpServers: this.getMcpConfig(),
+          allowedTools: this.retrieverCascadeTools,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 2,
+          maxBudgetUsd: 0.10,
+          maxThinkingTokens: 1024,
+          cwd: this.config.cwd,
+          persistSession: true,
+        },
+      });
+
+      for await (const msg of response) {
+        if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
+          this.retrieverBSessionId = msg.session_id;
+          log(`Retriever B session ID: ${this.retrieverBSessionId}`);
+        }
+      }
+    } catch (err: any) {
+      log(`Retriever B init error: ${err.message}`);
     }
   }
 
@@ -298,6 +354,8 @@ class Orchestrator {
             "mcp__memory__memory_drilldown_search",
             "mcp__memory__memory_get_project",
             "mcp__memory__memory_get_recent_learnings",
+            "mcp__memory__memory_index_upsert",
+            "mcp__memory__memory_index_search",
             "mcp__memory__db_select",
             "mcp__memory__db_execute",
             "Bash",
@@ -424,29 +482,52 @@ class Orchestrator {
   // RETRIEVER ROUTING
   // ============================================
 
-  private async routeToRetriever(msg: CognitiveMessage): Promise<void> {
-    if (!this.retrieverSessionId) return;
-    if (this.retrieverBusy) {
-      log("Retriever busy, skipping prompt");
-      // Write 'none' result so the hook doesn't hang
-      await this.writeRetrievalResult(msg.payload.prompt_hash, "none", null);
-      return;
-    }
+  // Track what has been injected this session for retriever awareness
+  private injectionHistory: string[] = [];
 
-    this.retrieverBusy = true;
+  private async routeToRetriever(msg: CognitiveMessage): Promise<void> {
     const prompt = msg.payload.prompt;
     const promptHash = msg.payload.prompt_hash;
 
     // Add to sliding window
     this.slidingWindow.addUserTurn(prompt);
 
+    // If both retrievers are busy, write 'none' so the hook doesn't hang
+    if (this.retrieverABusy && this.retrieverBBusy) {
+      log("Both retrievers busy, skipping prompt");
+      await this.writeRetrievalResult(promptHash, "none", null);
+      return;
+    }
+
+    // Build the injection history context
+    const injectionCtx = this.injectionHistory.length > 0
+      ? `\n\n[PREVIOUSLY INJECTED THIS SESSION — avoid repeating]\n${this.injectionHistory.slice(-5).map((s, i) => `${i + 1}. ${s}`).join("\n")}`
+      : "";
+
     const retrieverPrompt = `[NEW USER PROMPT]
 ${prompt}
 
 [CONVERSATION CONTEXT - Last turns]
-${this.slidingWindow.format()}
+${this.slidingWindow.format()}${injectionCtx}
 
 Search memory for relevant context for this user's work. If nothing relevant, respond with SKIP.`;
+
+    // Launch both retrievers in parallel
+    const promiseA = this.retrieverASessionId && !this.retrieverABusy
+      ? this.routeToRetrieverA(retrieverPrompt, promptHash)
+      : Promise.resolve();
+    const promiseB = this.retrieverBSessionId && !this.retrieverBBusy
+      ? this.routeToRetrieverB(retrieverPrompt, promptHash)
+      : Promise.resolve();
+
+    await Promise.allSettled([promiseA, promiseB]);
+
+    // If neither produced a result, write 'none' so hook doesn't hang forever
+    // (each individual method already writes its own result, but if both were skipped/busy)
+  }
+
+  private async routeToRetrieverA(retrieverPrompt: string, promptHash: string): Promise<void> {
+    this.retrieverABusy = true;
 
     try {
       let resultText = "";
@@ -454,27 +535,13 @@ Search memory for relevant context for this user's work. If nothing relevant, re
       const response = query({
         prompt: retrieverPrompt,
         options: {
-          resume: this.retrieverSessionId,
+          resume: this.retrieverASessionId!,
           mcpServers: this.getMcpConfig(),
-          allowedTools: [
-            "mcp__memory__memory_search",
-            "mcp__memory__memory_get_project",
-            "mcp__memory__memory_list_projects",
-            "mcp__memory__memory_search_errors",
-            "mcp__memory__memory_search_patterns",
-            "mcp__memory__memory_get_project_learnings",
-            "mcp__memory__memory_get_sessions",
-            "mcp__memory__memory_get_recent_learnings",
-            "mcp__memory__memory_get_preferences",
-            "mcp__memory__memory_drilldown_list",
-            "mcp__memory__memory_drilldown_get",
-            "mcp__memory__memory_drilldown_search",
-            "mcp__memory__db_select",
-          ],
+          allowedTools: this.retrieverBaseTools,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
-          maxTurns: 5,
-          maxBudgetUsd: this.config.retrieverBudget,
+          maxTurns: 15,
+          maxBudgetUsd: this.config.retrieverABudget,
           maxThinkingTokens: 1024,
           cwd: this.config.cwd,
         },
@@ -485,37 +552,131 @@ Search memory for relevant context for this user's work. If nothing relevant, re
           const resultMsg = sdkMsg as SDKResultMessage;
           if (resultMsg.subtype === "success") {
             resultText = resultMsg.result || "";
-            log(`Retriever result: ${resultText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+            log(`Retriever A result: ${resultText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
             this.totalCostUsd += resultMsg.total_cost_usd;
           } else {
-            log(`Retriever error: ${resultMsg.subtype}`);
+            log(`Retriever A error: ${resultMsg.subtype}`);
           }
         }
       }
 
-      // Parse result and write to retrieval_inbox
       const isSkip = !resultText || resultText.trim().toUpperCase() === "SKIP" || resultText.trim().length < 20;
 
       if (isSkip) {
-        await this.writeRetrievalResult(promptHash, "none", null);
+        await this.writeRetrievalResult(promptHash, "none", null, "retriever_a");
       } else {
-        await this.writeRetrievalResult(promptHash, "memory_results", resultText);
-        this.slidingWindow.addClaudeSummary(`[Retriever found context: ${resultText.slice(0, 100)}...]`);
+        await this.writeRetrievalResult(promptHash, "memory_results", resultText, "retriever_a");
+        this.slidingWindow.addClaudeSummary(`[Retriever A found: ${resultText.slice(0, 100)}...]`);
+        this.injectionHistory.push(resultText.slice(0, 150));
+
+        // Notify Retriever B if still working (best-effort)
+        if (this.retrieverBBusy && this.retrieverBSessionId) {
+          this.notifyPeer("B", resultText).catch(() => {});
+        }
       }
     } catch (err: any) {
-      log(`Retriever error: ${err.message}`);
-      await this.writeRetrievalResult(promptHash, "none", null);
+      log(`Retriever A error: ${err.message}`);
+      await this.writeRetrievalResult(promptHash, "none", null, "retriever_a");
     } finally {
-      this.retrieverBusy = false;
+      this.retrieverABusy = false;
       this.checkSessionBudget();
     }
   }
 
-  private async writeRetrievalResult(promptHash: string, type: string, text: string | null): Promise<void> {
+  private async routeToRetrieverB(retrieverPrompt: string, promptHash: string): Promise<void> {
+    this.retrieverBBusy = true;
+
+    try {
+      let resultText = "";
+
+      const response = query({
+        prompt: retrieverPrompt,
+        options: {
+          resume: this.retrieverBSessionId!,
+          mcpServers: this.getMcpConfig(),
+          allowedTools: this.retrieverCascadeTools,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 15,
+          maxBudgetUsd: this.config.retrieverBBudget,
+          maxThinkingTokens: 1024,
+          cwd: this.config.cwd,
+        },
+      });
+
+      for await (const sdkMsg of response) {
+        if (sdkMsg.type === "result") {
+          const resultMsg = sdkMsg as SDKResultMessage;
+          if (resultMsg.subtype === "success") {
+            resultText = resultMsg.result || "";
+            log(`Retriever B result: ${resultText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+            this.totalCostUsd += resultMsg.total_cost_usd;
+          } else {
+            log(`Retriever B error: ${resultMsg.subtype}`);
+          }
+        }
+      }
+
+      const isSkip = !resultText || resultText.trim().toUpperCase() === "SKIP" || resultText.trim().length < 20;
+
+      if (isSkip) {
+        await this.writeRetrievalResult(promptHash, "none", null, "retriever_b");
+      } else {
+        await this.writeRetrievalResult(promptHash, "memory_results", resultText, "retriever_b");
+        this.slidingWindow.addClaudeSummary(`[Retriever B found: ${resultText.slice(0, 100)}...]`);
+        this.injectionHistory.push(resultText.slice(0, 150));
+
+        // Notify Retriever A if still working (best-effort)
+        if (this.retrieverABusy && this.retrieverASessionId) {
+          this.notifyPeer("A", resultText).catch(() => {});
+        }
+      }
+    } catch (err: any) {
+      log(`Retriever B error: ${err.message}`);
+      await this.writeRetrievalResult(promptHash, "none", null, "retriever_b");
+    } finally {
+      this.retrieverBBusy = false;
+      this.checkSessionBudget();
+    }
+  }
+
+  private async notifyPeer(target: "A" | "B", injectedText: string): Promise<void> {
+    const sessionId = target === "A" ? this.retrieverASessionId : this.retrieverBSessionId;
+    if (!sessionId) return;
+
+    const notification = `[PEER_INJECTED] The other retriever already injected: "${injectedText.slice(0, 200)}..."
+Check what's already covered. Focus on COMPLEMENTARY information or respond SKIP if already sufficient.`;
+
+    try {
+      const response = query({
+        prompt: notification,
+        options: {
+          resume: sessionId,
+          mcpServers: this.getMcpConfig(),
+          allowedTools: target === "A" ? this.retrieverBaseTools : this.retrieverCascadeTools,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 1,
+          maxBudgetUsd: 0.02,
+          cwd: this.config.cwd,
+        },
+      });
+      for await (const _ of response) {} // drain
+    } catch {
+      // Best effort — race conditions are OK
+    }
+  }
+
+  // Clear injection history (called on compactor clear/reset)
+  clearInjectionHistory(): void {
+    this.injectionHistory = [];
+  }
+
+  private async writeRetrievalResult(promptHash: string, type: string, text: string | null, source?: string): Promise<void> {
     await this.db.query(
-      `INSERT INTO retrieval_inbox (session_id, prompt_hash, context_type, context_text, relevance_score)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [this.config.sessionId, promptHash, type, text, text ? 0.8 : 0.0]
+      `INSERT INTO retrieval_inbox (session_id, prompt_hash, context_type, context_text, relevance_score, source)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [this.config.sessionId, promptHash, type, text, text ? 0.8 : 0.0, source || "retriever"]
     );
   }
 
@@ -601,6 +762,8 @@ Analyze ALL observations together. Look for patterns BETWEEN them. For each obse
             "mcp__memory__memory_drilldown_search",
             "mcp__memory__memory_get_project",
             "mcp__memory__memory_get_recent_learnings",
+            "mcp__memory__memory_index_upsert",
+            "mcp__memory__memory_index_search",
             "mcp__memory__db_select",
             "mcp__memory__db_execute",
             "Bash",
@@ -685,6 +848,8 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
             "mcp__memory__memory_drilldown_search",
             "mcp__memory__memory_get_project",
             "mcp__memory__memory_get_recent_learnings",
+            "mcp__memory__memory_index_upsert",
+            "mcp__memory__memory_index_search",
             "mcp__memory__db_select",
             "mcp__memory__db_execute",
             "Bash",
@@ -945,6 +1110,10 @@ Build the initial session state document from this conversation.`;
 
       this.lastCompactedSize = currentTokenEstimate;
       log(`Compactor: saved state v${this.compactorVersion} to DB + raw tail to ${rawTailPath}`);
+
+      // Clear injection history — compaction means the main session context was reset
+      this.clearInjectionHistory();
+      log("Compactor: cleared injection history");
     } catch (err: any) {
       log(`Compactor error: ${err.message}`);
       if (err.stack) log(`Compactor stack: ${err.stack.slice(0, 500)}`);
@@ -1197,7 +1366,8 @@ async function main(): Promise<void> {
     projectSlug: getArg("project-slug", ""),
     lastCompactSize: parseInt(getArg("last-compact-size", "0"), 10) || 0,
     // Budget config
-    retrieverBudget: parseFloat(getArg("retriever-budget", "0.50")),
+    retrieverABudget: parseFloat(getArg("retriever-a-budget", "0.50")),
+    retrieverBBudget: parseFloat(getArg("retriever-b-budget", "0.50")),
     learnerBudget: parseFloat(getArg("learner-budget", "0.50")),
     compactorBudget: parseFloat(getArg("compactor-budget", "0.30")),
     curatorBudget: parseFloat(getArg("curator-budget", "0.30")),
@@ -1209,7 +1379,7 @@ async function main(): Promise<void> {
   };
 
   log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}, curator=${config.curatorEnabled}`);
-  log(`Budgets: retriever=$${config.retrieverBudget}, learner=$${config.learnerBudget}, compactor=$${config.compactorBudget}, curator=$${config.curatorBudget}, session=$${config.sessionBudget}`);
+  log(`Budgets: retrieverA=$${config.retrieverABudget}, retrieverB=$${config.retrieverBBudget}, learner=$${config.learnerBudget}, compactor=$${config.compactorBudget}, curator=$${config.curatorBudget}, session=$${config.sessionBudget}`);
   log(`Batch: window=${config.batchWindowMs}ms, min=${config.batchMinSize}, max=${config.batchMaxSize}`);
   if (config.transcriptPath) {
     log(`Transcript path: ${config.transcriptPath}`);

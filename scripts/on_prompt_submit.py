@@ -27,6 +27,18 @@ def get_conn():
     return psycopg2.connect(**DB_CONFIG)
 
 
+def _merge_results(results):
+    """Merge context blocks from dual retrievers, avoiding header duplication."""
+    if len(results) == 1:
+        return results[0]
+    merged = results[0]
+    for extra in results[1:]:
+        # Replace the header to mark it as additional context
+        extra_clean = extra.replace("=== MEMORY CONTEXT ===", "=== ADDITIONAL CONTEXT ===")
+        merged += "\n\n" + extra_clean
+    return merged
+
+
 def main():
     # Check if retriever is enabled
     if os.environ.get('AIDAM_MEMORY_RETRIEVER', 'on') == 'off':
@@ -93,11 +105,18 @@ def main():
             result_text = late_text
 
         # 3. Poll retrieval_inbox for results from THIS prompt (up to ~7s)
+        #    With dual retrievers, we may get 2 results. Take the first immediately,
+        #    then wait briefly for the second to merge.
         if not result_text:
+            results_collected = []
+            none_count = 0
+            second_chance = False
+            remaining_polls = 0
             poll_intervals = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
 
             for wait in poll_intervals:
                 time.sleep(wait)
+                # Fetch ALL pending results for this prompt (both retrievers)
                 cur.execute("""
                     SELECT id, context_type, context_text, relevance_score
                     FROM retrieval_inbox
@@ -105,14 +124,12 @@ def main():
                       AND prompt_hash = %s
                       AND status = 'pending'
                       AND expires_at > CURRENT_TIMESTAMP
-                    ORDER BY created_at DESC
-                    LIMIT 1
+                    ORDER BY created_at ASC
                 """, (session_id, prompt_hash))
-                row = cur.fetchone()
+                rows = cur.fetchall()
 
-                if row:
+                for row in rows:
                     row_id, ctx_type, ctx_text, relevance = row
-
                     # Mark as delivered
                     cur.execute("""
                         UPDATE retrieval_inbox
@@ -122,10 +139,26 @@ def main():
                     conn.commit()
 
                     if ctx_type == 'none' or not ctx_text:
-                        break  # Retriever decided nothing relevant
+                        none_count += 1
+                    else:
+                        results_collected.append(ctx_text)
 
-                    result_text = ctx_text
+                # Both retrievers returned 'none' — nothing relevant
+                if none_count >= 2:
                     break
+
+                # Got first real result — give 1.5s more for the second
+                if results_collected and not second_chance:
+                    second_chance = True
+                    remaining_polls = 3
+
+                if second_chance:
+                    remaining_polls -= 1
+                    if remaining_polls <= 0 or len(results_collected) >= 2:
+                        break
+
+            if results_collected:
+                result_text = _merge_results(results_collected)
 
         # 4. Output context if found
         if result_text:

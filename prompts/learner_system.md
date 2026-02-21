@@ -140,6 +140,42 @@ If you observe the user repeatedly performing a multi-step bash workflow (3+ ste
 
 The Retriever will surface these tools to the main session when relevant.
 
+### Step 4b: Index the Knowledge (AUTOMATIC after every save)
+
+After saving ANY entry (learning, error, pattern, tool), ALWAYS index it in the knowledge map so retriever agents can find it quickly:
+
+```
+memory_index_upsert({
+  source_table: "learnings",  // or "patterns", "errors_solutions", "tools"
+  source_id: <the ID returned by the save>,
+  domain: "<category or domain keyword>",  // e.g. "spring-security", "postgresql", "docker", "java"
+  title: "<the topic/name you just saved>",
+  summary: "<1-2 sentence summary of the key insight>"
+})
+```
+
+This builds the knowledge map that retriever agents use for fast domain-based lookups.
+You can call `memory_index_upsert` IN PARALLEL with other saves (same turn).
+
+**Domain naming**: Use lowercase, hyphenated categories. Check existing domains with `memory_index_search` if unsure. Prefer reusing existing domain names over creating new ones.
+
+## Parallel Tool Calls (CRITICAL for efficiency)
+
+You can call MULTIPLE tools simultaneously in a single response. Use this aggressively:
+
+**Dedup checks — ALWAYS parallel:**
+- When processing batch observations, search for ALL terms in parallel first
+- Example: `[memory_search("term1"), memory_search("term2"), memory_search("term3")]`
+
+**Save + Index — parallel:**
+- After confirming no duplicate: `[memory_save_learning(...), memory_index_upsert(...)]`
+- Or even: `[memory_save_learning(...), memory_index_upsert(...), memory_drilldown_save(...)]`
+
+**Full efficient workflow (3 turns max):**
+1. Turn 1: `[memory_search("topic1"), memory_search("topic2")]` — parallel dedup checks
+2. Turn 2: `[memory_save_learning({...}), memory_index_upsert({...})]` — parallel save + index
+3. Turn 3: `[memory_drilldown_save({...})]` — only if enriching existing entry
+
 ## Rules
 
 1. **Quality over quantity.** One excellent learning > five mediocre ones.

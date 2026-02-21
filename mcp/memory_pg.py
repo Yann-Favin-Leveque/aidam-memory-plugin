@@ -365,6 +365,55 @@ def get_context_for_project(project_id: int) -> Dict[str, Any]:
     }
 
 # ============================================
+# KNOWLEDGE INDEX
+# ============================================
+
+def upsert_knowledge_index(source_table: str, source_id: int, domain: str,
+                           title: str, summary: str, tags: List[str] = None):
+    """Upsert an entry in knowledge_index."""
+    execute_query("""
+        INSERT INTO knowledge_index (domain, source_table, source_id, title, summary, tags)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (source_table, source_id)
+        DO UPDATE SET domain=EXCLUDED.domain, title=EXCLUDED.title,
+                      summary=EXCLUDED.summary, tags=EXCLUDED.tags,
+                      updated_at=CURRENT_TIMESTAMP
+    """, (domain, source_table, source_id, title, summary,
+          json.dumps(tags) if tags else None), fetch=False)
+
+
+def search_knowledge_index(query_text: str, limit: int = 20) -> List[Dict]:
+    """FTS search in knowledge_index -- returns domains + titles."""
+    return execute_query("""
+        SELECT id, domain, source_table, source_id, title, summary,
+               ts_rank(search_vector, plainto_tsquery('english', %s)) as rank
+        FROM knowledge_index
+        WHERE search_vector @@ plainto_tsquery('english', %s)
+        ORDER BY rank DESC
+        LIMIT %s
+    """, (query_text, query_text, limit))
+
+
+def get_knowledge_domains(query_text: str = None) -> List[Dict]:
+    """List knowledge domains (optionally filtered by query). Returns domain + count + sample titles."""
+    if query_text:
+        return execute_query("""
+            SELECT domain, COUNT(*) as entry_count,
+                   array_agg(title ORDER BY id DESC) as sample_titles
+            FROM knowledge_index
+            WHERE search_vector @@ plainto_tsquery('english', %s)
+            GROUP BY domain ORDER BY entry_count DESC
+        """, (query_text,))
+    else:
+        return execute_query("""
+            SELECT domain, COUNT(*) as entry_count,
+                   (array_agg(title ORDER BY id DESC))[1:3] as sample_titles
+            FROM knowledge_index
+            GROUP BY domain ORDER BY entry_count DESC
+        """)
+
+
+# ============================================
 # KNOWLEDGE DETAILS (DRILL-DOWN)
 # ============================================
 
@@ -508,6 +557,7 @@ ALLOWED_MIGRATION_TABLES = {
     "patterns",
     "errors_solutions",
     "knowledge_details",
+    "knowledge_index",
     "tools",
     "commands",
     "projects",
