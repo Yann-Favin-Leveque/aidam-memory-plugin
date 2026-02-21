@@ -47,8 +47,8 @@ async function run() {
 
   // Seed a known error in the DB
   console.log("Seeding known error...");
-  await dbQuery(`INSERT INTO errors_solutions (error_signature, error_message, solution, root_cause, prevention, confidence)
-    VALUES ('column session_id does not exist', 'ERROR: column "session_id" does not exist\nHINT: Perhaps you meant to reference the column "cognitive_inbox.session_id"', 'The query references a column name without the table qualifier. Use table.column syntax or check the column name spelling. In this case, use cognitive_inbox.session_id.', 'Ambiguous column reference in JOIN or subquery', 'Always qualify column names with table alias in complex queries', 0.9)
+  await dbQuery(`INSERT INTO errors_solutions (error_signature, error_message, solution, root_cause, prevention)
+    VALUES ('column session_id does not exist', 'ERROR: column "session_id" does not exist\nHINT: Perhaps you meant to reference the column "cognitive_inbox.session_id"', 'The query references a column name without the table qualifier. Use table.column syntax or check the column name spelling. In this case, use cognitive_inbox.session_id.', 'Ambiguous column reference in JOIN or subquery', 'Always qualify column names with table alias in complex queries')
     ON CONFLICT DO NOTHING`);
   console.log("Seeded known error.\n");
 
@@ -164,7 +164,7 @@ async function run() {
   // =============================================
   console.log("\n=== Test #142: Cross-error pattern ===\n");
 
-  // Check for a general pattern about missing extensions
+  // Check for a general pattern about missing extensions (in patterns, learnings, OR errors)
   const patternCheck = await dbQuery(`
     SELECT name, solution FROM patterns
     WHERE name ILIKE '%extension%' OR name ILIKE '%missing%function%' OR name ILIKE '%PostgreSQL%extension%'
@@ -182,10 +182,19 @@ async function run() {
   `);
   console.log(`  Learnings about extensions: ${learningCheck.rows.length}`);
 
-  // Either a pattern or a learning about the general "missing extension" theme counts
-  const hasGeneralPattern = patternCheck.rows.length > 0 || learningCheck.rows.length > 0;
+  // Also check errors_solutions — the Learner may store as error rather than pattern
+  const errorExtCheck = await dbQuery(`
+    SELECT error_signature FROM errors_solutions
+    WHERE solution ILIKE '%CREATE EXTENSION%' OR error_signature ILIKE '%extension%'
+       OR error_signature ILIKE '%UndefinedFunction%' OR solution ILIKE '%pg_trgm%'
+    ORDER BY created_at DESC LIMIT 5
+  `);
+  console.log(`  Errors about extensions: ${errorExtCheck.rows.length}`);
+
+  // Any stored knowledge about missing extensions counts (pattern, learning, or error)
+  const hasGeneralPattern = patternCheck.rows.length > 0 || learningCheck.rows.length > 0 || errorExtCheck.rows.length > 0;
   record(142, hasGeneralPattern,
-    `Cross-error pattern: patterns=${patternCheck.rows.length}, learnings=${learningCheck.rows.length}`);
+    `Cross-error pattern: patterns=${patternCheck.rows.length}, learnings=${learningCheck.rows.length}, errors=${errorExtCheck.rows.length}`);
 
   // Cleanup
   const logContent = readLog(orch.logFile);

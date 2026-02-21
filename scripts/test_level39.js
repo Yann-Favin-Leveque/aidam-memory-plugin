@@ -205,7 +205,7 @@ async function run() {
   // Check if any entry has merge provenance
   const mergedEntries = await dbQuery(`
     SELECT topic, context FROM learnings
-    WHERE topic LIKE $1 AND (context ILIKE '%merged%' OR context ILIKE '%combined%' OR topic ILIKE '%MERGED%' OR confidence = 0)
+    WHERE topic LIKE $1 AND (context ILIKE '%merged%' OR context ILIKE '%combined%' OR topic ILIKE '%MERGED%' OR confidence = '0')
     LIMIT 5`, [`${TEST_PREFIX}%`]);
   console.log(`  Entries with merge markers: ${mergedEntries.rows.length}`);
 

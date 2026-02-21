@@ -177,6 +177,27 @@ The Curator runs periodically (default: every 6 hours) and performs:
 
 Trigger on-demand by inserting a `curator_trigger` message into `cognitive_inbox`.
 
+### Compactor Context Window
+
+The Compactor uses a dynamic sliding window over conversation content:
+
+| Situation | Window size | Rationale |
+|-----------|------------|-----------|
+| First compact of session (no previous state) | **45k chars** (~11k tokens) | Needs more context to build initial state |
+| Subsequent compacts (updating existing state) | **25k chars** (~6k tokens) | Only needs recent delta since last state |
+
+### `/smart-compact` — Safe Session Clear
+
+Custom slash command (defined in `.claude-plugin/skills/smart-compact/`) that replaces `/clear`:
+
+| Command | Behavior |
+|---------|----------|
+| `/smart-compact` | Checks orchestrator is running, verifies existing state, then clears + re-injects |
+| `/smart-compact -forcesummary` | Forces Compactor to run first (captures latest conversation), then clears + re-injects |
+| `/clear` | Native clear — works with AIDAM if plugin is loaded, but no safety checks |
+
+Use `/smart-compact` by default to prevent accidental context loss when the plugin isn't loaded.
+
 ## Search
 
 The memory system uses two search strategies:
@@ -247,7 +268,9 @@ for i in $(seq 13 39); do node scripts/test_level$i.js; done
 
 ```
 aidam-memory-plugin/
-├── .claude-plugin/plugin.json           # Plugin manifest
+├── .claude-plugin/
+│   ├── plugin.json                      # Plugin manifest
+│   └── skills/smart-compact/SKILL.md    # /smart-compact slash command
 ├── .env.example                         # Environment variables template
 ├── hooks/hooks.json                     # 4 lifecycle hooks
 ├── scripts/

@@ -45,24 +45,24 @@ async function run() {
 
   // Seed: 5 PG learnings + 2 PG patterns + 1 PG error
   console.log("Seeding PostgreSQL knowledge...");
-  await dbQuery(`INSERT INTO learnings (topic, insight, category, context, confidence, tags, project_name)
+  await dbQuery(`INSERT INTO learnings (topic, insight, category, context, confidence, tags, related_project_id)
     VALUES
-    ('PostgreSQL connection pooling', 'Use PgBouncer or HikariCP for connection pooling. Max pool size = (core_count * 2) + effective_spindle_count. For SSD: cores*2+1.', 'performance', 'High-traffic applications', 0.9, '["postgresql","performance","pooling"]', 'ecopaths'),
-    ('PostgreSQL JSONB indexing', 'Use GIN indexes for JSONB containment queries (@>). For specific key lookups, use expression index: CREATE INDEX idx ON t ((data->>''key'')). GIN is slower to update but faster to query.', 'performance', 'Document-style storage in PG', 0.85, '["postgresql","jsonb","indexing"]', 'ecopaths'),
+    ('PostgreSQL connection pooling', 'Use PgBouncer or HikariCP for connection pooling. Max pool size = (core_count * 2) + effective_spindle_count. For SSD: cores*2+1.', 'performance', 'High-traffic applications', 0.9, '["postgresql","performance","pooling"]', 1),
+    ('PostgreSQL JSONB indexing', 'Use GIN indexes for JSONB containment queries (@>). For specific key lookups, use expression index: CREATE INDEX idx ON t ((data->>''key'')). GIN is slower to update but faster to query.', 'performance', 'Document-style storage in PG', 0.85, '["postgresql","jsonb","indexing"]', 1),
     ('PostgreSQL vacuum tuning', 'autovacuum_vacuum_scale_factor=0.1 for busy tables (default 0.2 too high). autovacuum_analyze_scale_factor=0.05. Monitor pg_stat_user_tables.n_dead_tup.', 'config', 'Production PG maintenance', 0.8, '["postgresql","vacuum","tuning"]', NULL),
-    ('PostgreSQL full-text search', 'Use tsvector + tsquery for FTS. setweight() for ranking: A=title, B=body, C=tags. ts_rank with weights array. GIN index on tsvector column.', 'architecture', 'Search feature implementation', 0.95, '["postgresql","fts","search"]', 'aidam-memory'),
+    ('PostgreSQL full-text search', 'Use tsvector + tsquery for FTS. setweight() for ranking: A=title, B=body, C=tags. ts_rank with weights array. GIN index on tsvector column.', 'architecture', 'Search feature implementation', 0.95, '["postgresql","fts","search"]', 4),
     ('PostgreSQL partitioning', 'Use RANGE partitioning for time-series data. CREATE TABLE ... PARTITION BY RANGE (created_at). Each partition = 1 month. Auto-create with pg_partman.', 'architecture', 'Large tables with time-series data', 0.85, '["postgresql","partitioning","performance"]', NULL)
     ON CONFLICT DO NOTHING`);
 
-  await dbQuery(`INSERT INTO patterns (name, problem, solution, context, code_example, confidence, tags)
+  await dbQuery(`INSERT INTO patterns (name, category, problem, solution, context, code_example, confidence, tags)
     VALUES
-    ('PostgreSQL migration pattern', 'Need to evolve DB schema safely in production', 'Use versioned migration files (v1, v2, etc.) with IF NOT EXISTS guards. Always test rollback. Use transactions for DDL.', 'Any PostgreSQL project', 'CREATE TABLE IF NOT EXISTS ...; ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...;', 0.9, '["postgresql","migration","devops"]'),
-    ('PostgreSQL backup strategy', 'Need reliable backup for production databases', 'pg_dump for logical backups (small DBs), pg_basebackup for physical (large). WAL archiving for PITR. Test restores monthly.', 'Production PostgreSQL', 'pg_dump -Fc -h localhost -U postgres dbname > backup.dump', 0.85, '["postgresql","backup","ops"]')
+    ('PostgreSQL migration pattern', 'devops', 'Need to evolve DB schema safely in production', 'Use versioned migration files (v1, v2, etc.) with IF NOT EXISTS guards. Always test rollback. Use transactions for DDL.', 'Any PostgreSQL project', 'CREATE TABLE IF NOT EXISTS ...; ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...;', 0.9, '["postgresql","migration","devops"]'),
+    ('PostgreSQL backup strategy', 'ops', 'Need reliable backup for production databases', 'pg_dump for logical backups (small DBs), pg_basebackup for physical (large). WAL archiving for PITR. Test restores monthly.', 'Production PostgreSQL', 'pg_dump -Fc -h localhost -U postgres dbname > backup.dump', 0.85, '["postgresql","backup","ops"]')
     ON CONFLICT DO NOTHING`);
 
-  await dbQuery(`INSERT INTO errors_solutions (error_signature, error_message, solution, root_cause, prevention, confidence)
+  await dbQuery(`INSERT INTO errors_solutions (error_signature, error_message, solution, root_cause, prevention)
     VALUES
-    ('PostgreSQL deadlock detected', 'ERROR: deadlock detected\nDetail: Process X waits for ShareLock on transaction Y', 'Ensure consistent ordering of UPDATE statements across transactions. Use SELECT ... FOR UPDATE with NOWAIT to detect early.', 'Two transactions updating same rows in different order', 'Always lock rows in consistent order (e.g., by primary key ASC). Set lock_timeout.', 0.9)
+    ('PostgreSQL deadlock detected', 'ERROR: deadlock detected\nDetail: Process X waits for ShareLock on transaction Y', 'Ensure consistent ordering of UPDATE statements across transactions. Use SELECT ... FOR UPDATE with NOWAIT to detect early.', 'Two transactions updating same rows in different order', 'Always lock rows in consistent order (e.g., by primary key ASC). Set lock_timeout.')
     ON CONFLICT DO NOTHING`);
 
   console.log("Seeded 5 learnings + 2 patterns + 1 error.\n");
@@ -135,8 +135,8 @@ async function run() {
   console.log("\n=== Test #120: Incremental update ===\n");
 
   // Add a new PG learning
-  await dbQuery(`INSERT INTO learnings (topic, insight, category, context, confidence, tags, project_name)
-    VALUES ('PostgreSQL logical replication', 'Use CREATE PUBLICATION/SUBSCRIPTION for logical replication. Allows selective table replication and cross-version upgrades. Requires wal_level=logical. Slots must be monitored for lag.', 'architecture', 'Multi-region database setup', 0.9, '["postgresql","replication","ha"]', NULL)
+  await dbQuery(`INSERT INTO learnings (topic, insight, category, context, confidence, tags)
+    VALUES ('PostgreSQL logical replication', 'Use CREATE PUBLICATION/SUBSCRIPTION for logical replication. Allows selective table replication and cross-version upgrades. Requires wal_level=logical. Slots must be monitored for lag.', 'architecture', 'Multi-region database setup', 0.9, '["postgresql","replication","ha"]')
     ON CONFLICT DO NOTHING`);
   console.log("  Added new learning: PostgreSQL logical replication");
 

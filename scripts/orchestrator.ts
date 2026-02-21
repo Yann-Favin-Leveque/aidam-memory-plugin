@@ -837,12 +837,23 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
 
       log(`Compactor: ${lines.length} lines, ${allChunks.length} conversation chunks`);
 
-      // 2. Take the LAST ~30k chars of conversation chunks (not raw file bytes)
-      //    The sliding window applies to extracted conversation content, not raw JSONL
-      //    (because JSONL is dominated by tool progress entries, not conversation)
-      const maxChars = 30000; // ~7.5k tokens max to send to agent
+      // 2. Get previous state from DB (needed to determine context window size)
+      const prevResult = await this.db.query(
+        `SELECT state_text, version FROM session_state
+         WHERE session_id = $1
+         ORDER BY version DESC LIMIT 1`,
+        [this.config.sessionId]
+      );
 
-      // Work backwards from the end to collect up to maxChars
+      const previousState = prevResult.rows.length > 0 ? prevResult.rows[0].state_text : "";
+      const previousVersion = prevResult.rows.length > 0 ? prevResult.rows[0].version : 0;
+      this.compactorVersion = previousVersion + 1;
+
+      // 3. Take the LAST N chars of conversation chunks (sliding window)
+      //    First compact of session (no previous state) → 45k chars (~11k tokens)
+      //    Subsequent compacts (has previous state) → 25k chars (~6k tokens)
+      const maxChars = previousVersion === 0 ? 45000 : 25000;
+
       const conversationChunks: string[] = [];
       let charsCollected = 0;
 
@@ -858,19 +869,9 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
         return;
       }
 
-      // 2. Get previous state from DB
-      const prevResult = await this.db.query(
-        `SELECT state_text, version FROM session_state
-         WHERE session_id = $1
-         ORDER BY version DESC LIMIT 1`,
-        [this.config.sessionId]
-      );
+      log(`Compactor: using ${maxChars} char window (v${this.compactorVersion}, prev=${previousVersion}), collected ${charsCollected} chars from ${conversationChunks.length} chunks`);
 
-      const previousState = prevResult.rows.length > 0 ? prevResult.rows[0].state_text : "";
-      const previousVersion = prevResult.rows.length > 0 ? prevResult.rows[0].version : 0;
-      this.compactorVersion = previousVersion + 1;
-
-      // 3. Build prompt for Compactor
+      // 4. Build prompt for Compactor
       const compactorPrompt = previousState
         ? `[UPDATE REQUEST - Version ${this.compactorVersion}]
 
@@ -888,7 +889,7 @@ ${conversationChunks.join("\n\n")}
 
 Build the initial session state document from this conversation.`;
 
-      // 4. Send to Compactor agent
+      // 5. Send to Compactor agent
       const response = query({
         prompt: compactorPrompt,
         options: {

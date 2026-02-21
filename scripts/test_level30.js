@@ -112,9 +112,9 @@ async function run() {
   // Check if a learning or pattern about the comparison was saved
   await new Promise(r => setTimeout(r, 5000));
   const comparisonCheck = await dbQuery(`
-    SELECT 'learning' AS src, topic AS name FROM learnings WHERE (topic ILIKE '%puppeteer%' OR topic ILIKE '%playwright%' OR topic ILIKE '%screenshot%' OR topic ILIKE '%browser%' OR insight ILIKE '%puppeteer%') ORDER BY created_at DESC LIMIT 3
+    (SELECT 'learning' AS src, topic AS name FROM learnings WHERE (topic ILIKE '%puppeteer%' OR topic ILIKE '%playwright%' OR topic ILIKE '%screenshot%' OR topic ILIKE '%browser%' OR insight ILIKE '%puppeteer%') ORDER BY created_at DESC LIMIT 3)
     UNION ALL
-    SELECT 'pattern', name FROM patterns WHERE (name ILIKE '%screenshot%' OR name ILIKE '%browser%' OR name ILIKE '%puppeteer%' OR solution ILIKE '%puppeteer%') ORDER BY created_at DESC LIMIT 3
+    (SELECT 'pattern', name FROM patterns WHERE (name ILIKE '%screenshot%' OR name ILIKE '%browser%' OR name ILIKE '%puppeteer%' OR solution ILIKE '%puppeteer%') ORDER BY created_at DESC LIMIT 3)
   `);
   console.log(`  DB entries about browser/screenshot: ${comparisonCheck.rows.length}`);
   comparisonCheck.rows.forEach(r => console.log(`    ${r.src}: ${r.name}`));
