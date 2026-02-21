@@ -23,7 +23,7 @@ DB_CONFIG = {
     'host': 'localhost',
     'database': 'claude_memory',
     'user': 'postgres',
-    'password': '***REDACTED***'
+    'password': os.environ.get('PGPASSWORD', '')
 }
 
 # additionalContext limit is 10000 chars in Claude Code

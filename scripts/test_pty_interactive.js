@@ -79,7 +79,7 @@ async function waitForDb(sql, expectPattern, timeoutMs = 30000, intervalMs = 200
   while (Date.now() - start < timeoutMs) {
     const db = new Client({
       host: "localhost", database: "claude_memory",
-      user: "postgres", password: "***REDACTED***", port: 5432,
+      user: "postgres", password: process.env.PGPASSWORD || "", port: 5432,
     });
     await db.connect();
     const result = await db.query(sql);
@@ -98,7 +98,7 @@ async function waitForDb(sql, expectPattern, timeoutMs = 30000, intervalMs = 200
 async function checkDb(sql, expectPattern) {
   const db = new Client({
     host: "localhost", database: "claude_memory",
-    user: "postgres", password: "***REDACTED***", port: 5432,
+    user: "postgres", password: process.env.PGPASSWORD || "", port: 5432,
   });
   await db.connect();
   const result = await db.query(sql);
@@ -155,7 +155,7 @@ async function run() {
 
     // Grab session_id for later queries
     {
-      const db = new Client({ host: "localhost", database: "claude_memory", user: "postgres", password: "***REDACTED***", port: 5432 });
+      const db = new Client({ host: "localhost", database: "claude_memory", user: "postgres", password: process.env.PGPASSWORD || "", port: 5432 });
       await db.connect();
       const res = await db.query("SELECT session_id FROM orchestrator_state WHERE status='running' ORDER BY id DESC LIMIT 1");
       await db.end();
@@ -223,7 +223,7 @@ async function run() {
 
     // Also check if any tool_use observations arrived (may be 0 if all tools were skipped)
     {
-      const db = new Client({ host: "localhost", database: "claude_memory", user: "postgres", password: "***REDACTED***", port: 5432 });
+      const db = new Client({ host: "localhost", database: "claude_memory", user: "postgres", password: process.env.PGPASSWORD || "", port: 5432 });
       await db.connect();
       const toolRes = await db.query(
         `SELECT COUNT(*) as cnt FROM cognitive_inbox WHERE session_id='${sessionId}' AND message_type='tool_use' AND created_at > NOW() - INTERVAL '3 minutes'`

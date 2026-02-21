@@ -13,7 +13,7 @@ const path = require("path");
 
 const DB = {
   host: "localhost", database: "claude_memory",
-  user: "postgres", password: "***REDACTED***", port: 5432,
+  user: "postgres", password: process.env.PGPASSWORD || "", port: 5432,
 };
 const ORCHESTRATOR = path.join(__dirname, "orchestrator.js");
 const SCRIPTS = __dirname;

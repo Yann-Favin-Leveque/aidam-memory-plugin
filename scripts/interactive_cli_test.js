@@ -165,7 +165,7 @@ async function runTestScript(script) {
         host: "localhost",
         database: "claude_memory",
         user: "postgres",
-        password: "***REDACTED***",
+        password: process.env.PGPASSWORD || "",
         port: 5432,
     });
     let dbConnected = false;

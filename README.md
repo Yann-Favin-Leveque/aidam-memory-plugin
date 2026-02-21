@@ -27,7 +27,9 @@ npm install
 npx tsc
 
 # 3. Run database migration
-PGPASSWORD=***REDACTED*** "C:/Program Files/PostgreSQL/17/bin/psql.exe" \
+# Set PGPASSWORD in your .env file (see .env.example)
+source .env
+PGPASSWORD=$PGPASSWORD "C:/Program Files/PostgreSQL/17/bin/psql.exe" \
   -U postgres -h localhost -d claude_memory -f db/migration.sql
 
 # 4. Create generated tools directory

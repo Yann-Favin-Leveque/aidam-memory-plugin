@@ -6,7 +6,11 @@
 
 set -e
 
-export PGPASSWORD="***REDACTED***"
+# Load from .env if available
+if [ -f "$(dirname "$0")/../.env" ]; then
+  source "$(dirname "$0")/../.env"
+fi
+export PGPASSWORD="${PGPASSWORD:-}"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
 DB_ARGS="-U postgres -h localhost -d claude_memory"
 

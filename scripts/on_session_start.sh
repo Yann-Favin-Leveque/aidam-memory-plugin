@@ -57,7 +57,8 @@ mkdir -p "$LOG_DIR"
 
 # Detect zombie orchestrators in DB — only mark as crashed if heartbeat is stale
 # (parallel-safe: each row is scoped by session_id, we don't kill other sessions' orchestrators)
-export PGPASSWORD="***REDACTED***"
+# PGPASSWORD should be set in .env (loaded by plugin or parent shell)
+export PGPASSWORD="${PGPASSWORD:-}"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
 "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
   "UPDATE orchestrator_state SET status='crashed', stopped_at=CURRENT_TIMESTAMP WHERE status IN ('starting','running') AND last_heartbeat_at < CURRENT_TIMESTAMP - INTERVAL '120 seconds';" \

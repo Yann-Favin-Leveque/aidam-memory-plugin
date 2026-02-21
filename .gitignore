@@ -2,3 +2,8 @@ node_modules/
 *.js.map
 *.d.ts
 test-results.json
+
+# Secrets
+.env
+.env.*
+!.env.example

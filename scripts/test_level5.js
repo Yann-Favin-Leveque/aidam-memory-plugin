@@ -14,7 +14,7 @@ const DB = {
   host: "localhost",
   database: "claude_memory",
   user: "postgres",
-  password: "***REDACTED***",
+  password: process.env.PGPASSWORD || "",
   port: 5432,
 };
 
@@ -60,7 +60,7 @@ async function run() {
     try {
       execSync(`"${PYTHON}" "${SCRIPTS}/emergency_compact.py" "${SESSION_ID}" "${transcript.path}"`, {
         timeout: 30000,
-        env: { ...process.env, PGPASSWORD: "***REDACTED***" },
+        env: { ...process.env, PGPASSWORD: process.env.PGPASSWORD || "" },
       });
 
       // Check DB
@@ -110,7 +110,7 @@ async function run() {
       timeout: 10000,
       env: {
         ...process.env,
-        PGPASSWORD: "***REDACTED***",
+        PGPASSWORD: process.env.PGPASSWORD || "",
         CWD: "C:/Users/user/IdeaProjects/ecopathsWebApp1b",
       },
       encoding: "utf-8",

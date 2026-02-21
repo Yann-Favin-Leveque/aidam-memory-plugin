@@ -48,7 +48,7 @@ const DB_CONFIG = {
     host: "localhost",
     database: "claude_memory",
     user: "postgres",
-    password: "***REDACTED***",
+    password: process.env.PGPASSWORD || "",
     port: 5432,
 };
 class SlidingWindow {
@@ -380,7 +380,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
                     ],
                     permissionMode: "bypassPermissions",
                     allowDangerouslySkipPermissions: true,
-                    maxTurns: 5,
+                    maxTurns: 12,
                     maxBudgetUsd: 0.50,
                     maxThinkingTokens: 1024,
                     cwd: this.config.cwd,
@@ -463,7 +463,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
                     ],
                     permissionMode: "bypassPermissions",
                     allowDangerouslySkipPermissions: true,
-                    maxTurns: 8,
+                    maxTurns: 12,
                     maxBudgetUsd: 0.50,
                     cwd: this.config.cwd,
                 },

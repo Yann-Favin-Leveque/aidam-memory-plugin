@@ -196,7 +196,7 @@ async function runTestScript(script: TestScript): Promise<StepResult[]> {
     host: "localhost",
     database: "claude_memory",
     user: "postgres",
-    password: "***REDACTED***",
+    password: process.env.PGPASSWORD || "",
     port: 5432,
   });
   let dbConnected = false;

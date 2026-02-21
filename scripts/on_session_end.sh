@@ -32,7 +32,7 @@ fi
 PID_FILE="${PLUGIN_ROOT}/.orchestrator_${SESSION_ID}.pid"
 
 # Signal orchestrator to stop via DB
-export PGPASSWORD="***REDACTED***"
+export PGPASSWORD="${PGPASSWORD:-}"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
 
 # If reason is "clear" -> save marker in DB so SessionStart can find the previous state

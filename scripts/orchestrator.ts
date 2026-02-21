@@ -49,7 +49,7 @@ const DB_CONFIG = {
   host: "localhost",
   database: "claude_memory",
   user: "postgres",
-  password: "***REDACTED***",
+  password: process.env.PGPASSWORD || "",
   port: 5432,
 };
 
