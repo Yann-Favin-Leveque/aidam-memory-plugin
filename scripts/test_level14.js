@@ -16,6 +16,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const DB = {
   host: "localhost", database: "claude_memory",

@@ -14,14 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-// Load .env from project root
-const envPath = path.join(__dirname, "..", ".env");
-if (fs.existsSync(envPath)) {
-  fs.readFileSync(envPath, "utf-8").split("\n").forEach(line => {
-    const m = line.match(/^([^#=]+)=(.*)$/);
-    if (m && !process.env[m[1].trim()]) process.env[m[1].trim()] = m[2].trim();
-  });
-}
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
 const DB = { host: "localhost", database: "claude_memory", user: "postgres", password: process.env.PGPASSWORD || "", port: 5432 };
 const ORCHESTRATOR = path.join(__dirname, "orchestrator.js");

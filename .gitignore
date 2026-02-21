@@ -2,8 +2,10 @@ node_modules/
 *.js.map
 *.d.ts
 test-results.json
+__pycache__/
 
 # Secrets
 .env
 .env.*
 !.env.example
+.idea/
