@@ -383,6 +383,15 @@ class Orchestrator {
         } else if (msg.message_type === "curator_trigger") {
           await this.runCurator();
           await this.markCompleted(msg.id);
+        } else if (msg.message_type === "compactor_trigger") {
+          if (this.compactorSessionId && this.config.transcriptPath) {
+            log("Compactor triggered on-demand (smart-compact)");
+            const stat = fs.statSync(this.config.transcriptPath);
+            await this.runCompactor(this.config.transcriptPath, Math.floor(stat.size / 6));
+          } else {
+            log("Compactor trigger ignored: no compactor session or transcript path");
+          }
+          await this.markCompleted(msg.id);
         } else if (msg.message_type === "session_event") {
           const event = msg.payload?.event;
           if (event === "session_end") {

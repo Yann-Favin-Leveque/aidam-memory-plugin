@@ -1,72 +1,47 @@
 # AIDAM Memory Plugin — Ideas & Future Improvements
 
-## PostgreSQL Search Improvements (suggested session)
+## PostgreSQL Search Improvements
 
-### 1. ts_rank avec poids differencies
-- Donner plus de poids aux titres (topic/name) qu'au contenu (insight/context)
-- Gratuit, deja supporte par PostgreSQL
-- `ts_rank('{0.1, 0.2, 0.4, 1.0}', tsv, query)` — poids D < C < B < A
-
-### 2. pg_trgm pour fuzzy matching
-- Extension native PostgreSQL (`CREATE EXTENSION pg_trgm`)
-- Permet de matcher malgre les fautes de frappe
-- Utile pour le francais mal stemme
-- `similarity()`, `%` operator, index GIN/GiST
-
-### 3. Stemming francais
+### Stemming francais
 - Ajouter config `'french'` en plus du `'english'` actuel
 - `to_tsvector('french', text)` pour les contenus en francais
 - Ou multilingue : creer un tsv dual-language
 
-### 4. Pondérations des données en mémoire
-- avec un niveau de confiance / certitude
+## ~~Implementes~~
+
+> Les items suivants ont ete implementes et sont retires de la roadmap :
+> - ~~ts_rank avec poids differencies~~ → Phase 1, setweight A/B/C/D
+> - ~~pg_trgm pour fuzzy matching~~ → Phase 1, migration_v3_trigram.sql
+> - ~~Pondérations des données en mémoire (confidence)~~ → Deja present dans le schema
+> - ~~Budget configurable~~ → Phase 2, --retriever-budget, --session-budget, etc.
+> - ~~Batch processing~~ → Phase 2, Learner batch (window 10s, min 3, max 10)
+> - ~~Clean up DB memory (Curator agent)~~ → Phase 3, 4e agent Haiku
+> - ~~Knowledge compaction (Compactor)~~ → Deja present dans l'orchestrator
 
 ## Parametrisation
 
 ### maxTurns configurable
-- Actuellement hardcode dans orchestrator.js
+- Actuellement hardcode dans orchestrator.ts
 - Pourrait etre passe en CLI arg (`--retriever-max-turns=12`)
-- Ou dans un fichier de config JSON
-
-### Budget configurable
-- `--max-budget-usd=0.50` pour le Retriever/Learner per-call
-- `--session-budget=5.00` pour le budget total de la session
+- Ou dans config/defaults.json
 
 ### Modeles configurables
 - Pouvoir choisir le modele du Retriever et du Learner via CLI
 - `--retriever-model=haiku` / `--learner-model=haiku`
+- Actuellement les modeles sont dans config/defaults.json mais pas exposes en CLI
 
 ## Architecture
-
-### Batch processing
-- Quand plusieurs tool_use arrivent en rafale, les grouper en un seul appel Learner
-- Reduirait les couts et le temps de traitement
 
 ### Retriever caching
 - Cache les resultats de retrieval pour des prompts similaires (embeddings?)
 - Eviterait les appels redondants dans une meme session
 
-### Knowledge compaction
-- Le Compactor agent (desactive pour les tests) pourrait consolider les learnings similaires
-- Fusionner les drilldowns redondants
-- Archiver les erreurs obsoletes
-
-### Clean up DB memory
-- Agent qui passe tous les X temps dans la mémoire pour clean up
-- système de "data used tracker" pour aider
-
-## Features
-
-### PC use like a human
-- Permettre a Claude d'utiliser un navigateur comme un user? 
-- (screenshot, click?)
-- Pour certaines taches le nécessitants
-
-### Permettre d'utiliser claude code
-- permettre d'utiliser claude code pour certaines taches
-- (appeler une session, avec plugin ou sans, et interagir avec)
-- SSI utile par rapport aux subagent natifs
-- **Teste dans L31** : le systeme apprend lui-meme a le faire
+### Retriever multi-strategy
+- Au lieu de toujours faire `plainto_tsquery`, le Retriever choisit sa strategie :
+  - **Exact match** pour les error signatures connues
+  - **Fuzzy** (pg_trgm) pour les descriptions vagues ou avec fautes
+  - **Project-scoped** quand un projet est mentionne dans le prompt
+  - **Recency-biased** quand le prompt parle de "recent" ou "last time"
 
 ## Intelligence & Analytics
 
@@ -82,20 +57,6 @@
 - Colonnes : `artifact_type`, `artifact_id`, `retrieved_at`, `was_useful` (nullable)
 - Permet le garbage collection intelligent et l'optimisation des couts
 - Les connaissances jamais retrouvees en 30 jours → candidates au cleanup
-
-### Retriever multi-strategy
-- Au lieu de toujours faire `plainto_tsquery`, le Retriever choisit sa strategie :
-  - **Exact match** pour les error signatures connues
-  - **Fuzzy** (pg_trgm) pour les descriptions vagues ou avec fautes
-  - **Project-scoped** quand un projet est mentionne dans le prompt
-  - **Recency-biased** quand le prompt parle de "recent" ou "last time"
-- Prerequis : pg_trgm (section PostgreSQL #2)
-
-### Learner observation batching
-- Quand 5+ tool_use arrivent en <10s, les grouper en un seul appel Learner
-- Le Learner recoit le batch et extrait les patterns ENTRE les observations
-- Exemple : 3 Edits consecutifs sur le meme fichier → le Learner comprend le refactoring global
-- Reduirait les couts (~5x moins d'appels) et ameliorerait la qualite (contexte plus riche)
 
 ## Data Management
 
@@ -113,3 +74,17 @@
 - Table `knowledge_history` : `artifact_type`, `artifact_id`, `old_value`, `new_value`, `changed_at`
 - Permet de voir l'evolution d'une connaissance au fil du temps
 - Utile pour le self-correction (L25) — verifier que le systeme UPDATE plutot que INSERT
+
+## Features
+
+### PC use like a human
+- Permettre a Claude d'utiliser un navigateur comme un user?
+- (screenshot, click?)
+- Pour certaines taches le nécessitants
+- **Partiellement teste dans L30** : le systeme apprend lui-meme a prendre des screenshots
+
+### Permittre d'utiliser claude code
+- Permettre d'utiliser claude code pour certaines taches
+- (appeler une session, avec plugin ou sans, et interagir avec)
+- SSI utile par rapport aux subagent natifs
+- **Partiellement teste dans L31** : le systeme apprend lui-meme a le faire
