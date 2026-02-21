@@ -28,21 +28,22 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
 if [ -z "$PLUGIN_ROOT" ]; then
   PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fi
-PID_FILE="${PLUGIN_ROOT}/.orchestrator.pid"
+# PID file scoped by session_id (parallel-safe)
+PID_FILE="${PLUGIN_ROOT}/.orchestrator_${SESSION_ID}.pid"
 
 # Signal orchestrator to stop via DB
 export PGPASSWORD="***REDACTED***"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
 
-# If reason is "clear" -> save marker so SessionStart can find the previous state
+# If reason is "clear" -> save marker in DB so SessionStart can find the previous state
 if [ "$REASON" = "clear" ]; then
-  # Save previous session_id to a marker file for the next SessionStart to pick up
-  MARKER_DIR="$HOME/.claude/aidam"
-  mkdir -p "$MARKER_DIR"
-  echo "$SESSION_ID" > "${MARKER_DIR}/last_cleared_session"
+  # Store the cleared session_id in orchestrator_state (parallel-safe, scoped by session_id)
+  "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+    "UPDATE orchestrator_state SET status='cleared' WHERE session_id='${SESSION_ID}' AND status IN ('running','stopping');" \
+    2>/dev/null || true
 
   # Force a final compactor run before we lose the context
-  # (Only if there's a transcript and a session_state exists)
+  # (Only if there's a transcript and no session_state yet)
   HAS_STATE=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
     "SELECT COUNT(*) FROM session_state WHERE session_id='${SESSION_ID}';" \
     2>/dev/null || echo "0")
@@ -62,7 +63,7 @@ fi
   "INSERT INTO cognitive_inbox (session_id, message_type, payload, status) VALUES ('${SESSION_ID}', 'session_event', '{\"event\":\"session_end\"}', 'pending');" \
   2>/dev/null || true
 
-# Wait briefly for graceful shutdown (max 3s)
+# Wait briefly for graceful shutdown (max 3s) — only kill OUR orchestrator
 if [ -f "$PID_FILE" ]; then
   PID=$(cat "$PID_FILE")
   for i in 1 2 3; do
@@ -76,6 +77,14 @@ if [ -f "$PID_FILE" ]; then
     kill "$PID" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
+fi
+# Also clean up legacy global PID file if it points to the same PID
+LEGACY_PID_FILE="${PLUGIN_ROOT}/.orchestrator.pid"
+if [ -f "$LEGACY_PID_FILE" ]; then
+  LEGACY_PID=$(cat "$LEGACY_PID_FILE")
+  if [ "$LEGACY_PID" = "$PID" ] 2>/dev/null; then
+    rm -f "$LEGACY_PID_FILE"
+  fi
 fi
 
 exit 0
