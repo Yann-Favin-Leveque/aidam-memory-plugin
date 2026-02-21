@@ -16,6 +16,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -131,6 +132,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 13: Parallel Sessions ("Je coexiste")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session A: ${SID_A}`);
   console.log(`Session B: ${SID_B}\n`);
 
@@ -211,8 +213,14 @@ async function run() {
   const bSawA = /ALPHA_ONLY_A/i.test(logB);
   console.log(`  Session B log mentions ALPHA_ONLY_A: ${bSawA}`);
 
-  record(50, statusA === "completed" && bInbox.rows.length === 0 && !bSawA,
-    `Learner isolation: A_processed=${statusA}, B_processed=${bInbox.rows.length}, B_saw_A=${bSawA}`);
+  const preCheck50 = statusA === "completed" && bInbox.rows.length === 0 && !bSawA;
+  if (preCheck50) {
+    const v50 = await askValidator(50, "The Learner correctly processed tool_use from session A without cross-contaminating session B's inbox", { statusA, bInboxCount: bInbox.rows.length, bSawA, logBExcerpt: logB.slice(-500) }, "Session B's cognitive_inbox must have zero entries from session A's tool observations");
+    validatorCost += v50.cost;
+    record(50, v50.passed, `${v50.reason}`);
+  } else {
+    record(50, false, `Structural pre-check failed: A_processed=${statusA}, B_processed=${bInbox.rows.length}, B_saw_A=${bSawA}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -253,8 +261,14 @@ async function run() {
   console.log(`  Session A retrieval results for B's hash: ${aRetrievalForB.rows.length}`);
 
   const isolated = bRetrieval.rows.length === 0 && aRetrievalForB.rows.length === 0;
-  record(51, isolated && resultA !== null,
-    `Retriever isolation: B_has_A_result=${bRetrieval.rows.length}, A_has_B_result=${aRetrievalForB.rows.length}`);
+  const preCheck51 = isolated && resultA !== null;
+  if (preCheck51) {
+    const v51 = await askValidator(51, "The Retriever correctly returned results only for session A's prompt, with no cross-contamination to session B", { bRetrievalCount: bRetrieval.rows.length, aRetrievalForBCount: aRetrievalForB.rows.length, resultAType: resultA?.context_type, resultALen: resultA?.context_text?.length, resultBType: resultB?.context_type }, "Session B's retrieval_inbox must have zero entries matching session A's prompt hash");
+    validatorCost += v51.cost;
+    record(51, v51.passed, `${v51.reason}`);
+  } else {
+    record(51, false, `Structural pre-check failed: B_has_A=${bRetrieval.rows.length}, A_has_B=${aRetrievalForB.rows.length}, resultA=${resultA !== null}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -369,6 +383,7 @@ async function run() {
   await query("DELETE FROM session_state WHERE session_id IN ($1, $2)", [SID_A, SID_B]);
   await cleanSession(`parallel-C-${SID_C.split("-").pop()}`);
 
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

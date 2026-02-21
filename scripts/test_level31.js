@@ -15,6 +15,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -38,6 +39,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level31-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 31: Claude Code Session Spawning ("J'apprends a me cloner")`);
   console.log(`${"=".repeat(60)}`);
@@ -108,7 +110,20 @@ async function run() {
   console.log(`  Injected claude -p usage (id=${id129})`);
   const st129 = await waitForProcessed(id129, 90000);
   console.log(`  Status: ${st129}`);
-  record(129, st129 === "completed", `Pattern learning: ${st129}`);
+  if (!(st129 === "completed")) {
+    record(129, false, "Structural pre-check failed");
+  } else {
+    // Check DB for what learner saved about claude -p
+    await new Promise(r => setTimeout(r, 5000));
+    const db129 = await dbQuery(`
+      (SELECT 'pattern' AS src, name, solution AS detail FROM patterns WHERE solution ILIKE '%claude -p%' OR solution ILIKE '%headless%' OR name ILIKE '%claude%' ORDER BY created_at DESC LIMIT 3)
+      UNION ALL
+      (SELECT 'learning', topic, insight FROM learnings WHERE insight ILIKE '%claude -p%' OR insight ILIKE '%headless%' OR topic ILIKE '%claude%code%' ORDER BY created_at DESC LIMIT 3)
+    `);
+    const v129 = await askValidator(129, "Learner extracts pattern from claude -p usage", { status: st129, dbEntries: db129.rows }, "Should save a pattern or learning about Claude Code headless mode (--print flag, parallel execution). Must include the actual CLI syntax.");
+    validatorCost += v129.cost;
+    record(129, v129.passed, v129.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -154,8 +169,13 @@ async function run() {
   console.log(`  Generated tools: ${toolCheck.rows.length}`);
 
   const persisted = [patternCheck.rows.length > 0, learningCheck.rows.length > 0].filter(Boolean).length;
-  record(131, persisted >= 1,
-    `DB persistence: patterns=${patternCheck.rows.length}, learnings=${learningCheck.rows.length}, tools=${toolCheck.rows.length}`);
+  if (!(persisted >= 1)) {
+    record(131, false, "Structural pre-check failed");
+  } else {
+    const v131 = await askValidator(131, "Knowledge about parallel analysis/Claude CLI persisted", { patterns: patternCheck.rows, learnings: learningCheck.rows, tools: toolCheck.rows.length }, "At least one pattern, learning, or tool should exist about parallel file analysis, Claude -p, or headless mode execution. The name/topic should indicate it's about parallel or headless CLI usage.");
+    validatorCost += v131.cost;
+    record(131, v131.passed, v131.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -175,13 +195,19 @@ async function run() {
   console.log(`  CLI reference: ${hasCliRef}`);
   console.log(`  Parallel concept: ${hasParallel}`);
 
-  record(132, recallText.length > 50 && (hasCliRef || hasParallel),
-    `Capability recall: length=${recallText.length}, CLI=${hasCliRef}, parallel=${hasParallel}`);
+  if (!(recallText.length > 50 && (hasCliRef || hasParallel))) {
+    record(132, false, "Structural pre-check failed");
+  } else {
+    const v132 = await askValidator(132, "Retriever recalls sub-session capability for parallel task", recallText, "Must reference claude -p or --print for headless execution AND mention parallel/concurrent processing. Should provide actionable guidance.");
+    validatorCost += v132.cost;
+    record(132, v132.passed, v132.reason);
+  }
 
   // Cleanup
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -36,6 +37,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level29-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 29: Auto-Documentation ("Je documente")`);
   console.log(`${"=".repeat(60)}`);
@@ -93,8 +95,13 @@ async function run() {
   console.log(`  Type: ${docResult?.context_type}, Length: ${docText.length}`);
   console.log(`  Preview: ${docText.slice(0, 300)}...\n`);
 
-  record(117, docText.length > 200 && docResult?.context_type === "memory_results",
-    `Knowledge inventory: type=${docResult?.context_type}, length=${docText.length}`);
+  if (!(docText.length > 200 && docResult?.context_type === "memory_results")) {
+    record(117, false, "Structural pre-check failed");
+  } else {
+    const v117 = await askValidator(117, "Retriever generates structured documentation from PG knowledge", docText, "Must produce a structured document that synthesizes PostgreSQL knowledge from memory. Should organize learnings into sections, reference specific patterns/errors, and be useful as actual documentation.");
+    validatorCost += v117.cost;
+    record(117, v117.passed, v117.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -109,8 +116,13 @@ async function run() {
   const crossRefCount = [hasLearningRef, hasPatternRef, hasErrorRef].filter(Boolean).length;
   console.log(`  Learning refs: ${hasLearningRef}, Pattern refs: ${hasPatternRef}, Error refs: ${hasErrorRef}`);
 
-  record(118, crossRefCount >= 2,
-    `Cross-references: ${crossRefCount}/3 types (learnings=${hasLearningRef}, patterns=${hasPatternRef}, errors=${hasErrorRef})`);
+  if (!(crossRefCount >= 2)) {
+    record(118, false, "Structural pre-check failed");
+  } else {
+    const v118 = await askValidator(118, "Retriever returns documentation with pattern/learning references", docText, "The retrieved documentation should contain references to numbered patterns (e.g., #17, #18) or learnings from memory. Having at least 2 such references indicates the Retriever is pulling from multiple knowledge sources.");
+    validatorCost += v118.cost;
+    record(118, v118.passed, v118.reason);
+  }
 
   // =============================================
   // TEST #119: Quality check
@@ -152,13 +164,19 @@ async function run() {
   console.log(`  Contains replication: ${hasReplication}`);
   console.log(`  Enriched (longer or has new content): ${isEnriched}`);
 
-  record(120, isEnriched,
-    `Incremental: first=${docText.length}, second=${docText2.length}, replication=${hasReplication}`);
+  if (!isEnriched) {
+    record(120, false, "Structural pre-check failed");
+  } else {
+    const v120 = await askValidator(120, "Second retrieval is enriched with more content than the first", { first: docText.slice(0, 500), second: docText2.slice(0, 500), firstLen: docText.length, secondLen: docText2.length }, "The second retrieval should be different from (and ideally richer than) the first one. It may contain additional topics, more details, or different knowledge. The key point is that the memory system shows evolution.");
+    validatorCost += v120.cost;
+    record(120, v120.passed, v120.reason);
+  }
 
   // Cleanup
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

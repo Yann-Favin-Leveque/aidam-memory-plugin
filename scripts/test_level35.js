@@ -17,6 +17,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -40,6 +41,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level35-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 35: Autonomous Web Deployment ("Je cree un site")`);
   console.log(`${"=".repeat(60)}`);
@@ -97,8 +99,13 @@ async function run() {
   const hasPatterns = /pattern|landing|hero|feature|css/i.test(planText);
   console.log(`  Has plan: ${hasPlan}, Uses patterns: ${hasPatterns}`);
 
-  record(153, planText.length > 100 && hasPlan,
-    `Site planning: length=${planText.length}, plan=${hasPlan}, patterns=${hasPatterns}`);
+  if (!(planText.length > 100 && hasPlan)) {
+    record(153, false, "Structural pre-check failed");
+  } else {
+    const v153 = await askValidator(153, "Retriever creates site plan using acquired patterns", planText, "Plan must include deployment steps and reference any patterns about HTML generation, GitHub Pages, or web deployment from memory. Should be structured as actionable steps.");
+    validatorCost += v153.cost;
+    record(153, v153.passed, v153.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -121,17 +128,22 @@ async function run() {
   console.log("\n=== Test #155: Content accuracy ===\n");
   // Check what the Learner extracted — look for patterns/learnings about HTML structure
   const htmlCheck = await dbQuery(`
-    SELECT 'pattern' AS src, name FROM patterns WHERE name ILIKE '%landing%' OR name ILIKE '%html%' OR name ILIKE '%deploy%' OR name ILIKE '%github pages%'
+    (SELECT 'pattern' AS src, name FROM patterns WHERE name ILIKE '%landing%' OR name ILIKE '%html%' OR name ILIKE '%deploy%' OR name ILIKE '%github pages%')
     UNION ALL
-    SELECT 'learning', topic FROM learnings WHERE topic ILIKE '%landing%' OR topic ILIKE '%html%' OR topic ILIKE '%deploy%' OR topic ILIKE '%github pages%'
+    (SELECT 'learning', topic FROM learnings WHERE topic ILIKE '%landing%' OR topic ILIKE '%html%' OR topic ILIKE '%deploy%' OR topic ILIKE '%github pages%')
     ORDER BY src LIMIT 10
   `);
   console.log(`  HTML/deploy entries: ${htmlCheck.rows.length}`);
   htmlCheck.rows.forEach(r => console.log(`    ${r.src}: ${r.name}`));
 
   // The Learner should have saved at least something about the HTML/deploy knowledge
-  record(155, htmlCheck.rows.length > 0 || st154 === "completed",
-    `Content accuracy: ${htmlCheck.rows.length} HTML/deploy entries`);
+  if (!(htmlCheck.rows.length > 0 || st154 === "completed")) {
+    record(155, false, "Structural pre-check failed");
+  } else {
+    const v155 = await askValidator(155, "Content accuracy — HTML/deploy knowledge persisted", htmlCheck.rows.length > 0 ? htmlCheck.rows : { processingStatus: st154, entries: 0 }, "Stored entries should contain specific technical content about web deployment (GitHub Pages, HTML structure, CSS patterns). Not just generic 'deploy website'.");
+    validatorCost += v155.cost;
+    record(155, v155.passed, v155.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -179,6 +191,7 @@ async function run() {
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

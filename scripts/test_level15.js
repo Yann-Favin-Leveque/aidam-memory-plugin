@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -135,6 +136,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 15: API Pattern Extraction ("J'apprends une API")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SESSION_ID}`);
   console.log(`Test tag: ${TEST_TAG}\n`);
 
@@ -241,8 +243,14 @@ async function run() {
   console.log(`  Mentions az/azure: ${mentionsAz}`);
   console.log(`  Mentions deploy/jar: ${mentionsDeploy}`);
 
-  record(60, recallText.length > 50 && (mentionsAz || mentionsDeploy),
-    `API recall: azure=${mentionsAz}, deploy=${mentionsDeploy}, length=${recallText.length}`);
+  const preCheck60 = recallText.length > 50 && (mentionsAz || mentionsDeploy);
+  if (preCheck60) {
+    const v60 = await askValidator(60, "Retriever recalls Azure-related knowledge when asked about deploying a Java WAR on Azure", recallText, "The retrieval should return Azure-related knowledge: deployment patterns, error solutions, or configuration commands (e.g., az webapp, az login, az config). Any Azure-related actionable content counts as relevant recall, including known errors and their solutions.");
+    validatorCost += v60.cost;
+    record(60, v60.passed, `${v60.reason}`);
+  } else {
+    record(60, false, `Structural pre-check failed: azure=${mentionsAz}, deploy=${mentionsDeploy}, length=${recallText.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -320,8 +328,14 @@ async function run() {
   console.log(`  Aspects covered: ${aspectsCovered}/3`);
 
   // Pass if at least 2 aspects are covered (config + deploy minimum)
-  record(62, composeText.length > 100 && aspectsCovered >= 2,
-    `API composition: aspects=${aspectsCovered}/3, config=${mentionsConfig}, deploy=${mentionsDeployCmd}, auth=${mentionsAuth}, length=${composeText.length}`);
+  const preCheck62 = composeText.length > 100 && aspectsCovered >= 2;
+  if (preCheck62) {
+    const v62 = await askValidator(62, "Retriever composes config+deploy+auth aspects", composeText, "Must cover at least 2 of: configuration (appsettings, environment vars), deployment (az webapp, JAR), authentication (401, credentials). Should synthesize them coherently.");
+    validatorCost += v62.cost;
+    record(62, v62.passed, `${v62.reason}`);
+  } else {
+    record(62, false, `Structural pre-check failed: aspects=${aspectsCovered}/3, length=${composeText.length}`);
+  }
 
   // ═══════════════════════════════════════════════════════════
   // Cost + Logs
@@ -341,6 +355,7 @@ async function run() {
   await killSession(SESSION_ID, orch.proc);
   await cleanSession(SESSION_ID);
 
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

@@ -15,6 +15,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -38,6 +39,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level30-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 30: Browser Capability Acquisition ("J'apprends a voir")`);
   console.log(`${"=".repeat(60)}`);
@@ -119,8 +121,13 @@ async function run() {
   console.log(`  DB entries about browser/screenshot: ${comparisonCheck.rows.length}`);
   comparisonCheck.rows.forEach(r => console.log(`    ${r.src}: ${r.name}`));
 
-  record(123, st123 === "completed" && comparisonCheck.rows.length > 0,
-    `Solution comparison: status=${st123}, saved=${comparisonCheck.rows.length} entries`);
+  if (!(st123 === "completed" && comparisonCheck.rows.length > 0)) {
+    record(123, false, "Structural pre-check failed");
+  } else {
+    const v123 = await askValidator(123, "Learner saved knowledge about browser automation tools", comparisonCheck.rows, "At least one saved entry should be about browser automation, testing tools, Puppeteer, Playwright, or screenshot generation. The entry name/topic should clearly relate to browser testing or automation.");
+    validatorCost += v123.cost;
+    record(123, v123.passed, v123.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -161,8 +168,13 @@ async function run() {
 
   // We need at least 2 out of 3 (tool, pattern, learning)
   const persisted = [toolCheck.rows.length > 0, patternCheck.rows.length > 0, learningCheck.rows.length > 0].filter(Boolean).length;
-  record(125, persisted >= 2,
-    `Persistence: tools=${toolCheck.rows.length}, patterns=${patternCheck.rows.length}, learnings=${learningCheck.rows.length} (${persisted}/3 types)`);
+  if (!(persisted >= 2)) {
+    record(125, false, "Structural pre-check failed");
+  } else {
+    const v125 = await askValidator(125, "Multiple knowledge artifact types persisted", { tools: toolCheck.rows, patterns: patternCheck.rows, learnings: learningCheck.rows }, "At least 2 of 3 artifact types (tools, patterns, learnings) should exist with names related to browser automation, screenshots, or testing. Having multiple artifact types shows the Learner categorizes knowledge appropriately.");
+    validatorCost += v125.cost;
+    record(125, v125.passed, v125.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -182,13 +194,19 @@ async function run() {
   console.log(`  Mentions screenshot tool: ${recallHasScreenshot}`);
   console.log(`  Has usage info: ${recallHasUsage}`);
 
-  record(126, recallText.length > 50 && recallHasScreenshot,
-    `Capability recall: length=${recallText.length}, screenshot=${recallHasScreenshot}, usage=${recallHasUsage}`);
+  if (!(recallText.length > 50 && recallHasScreenshot)) {
+    record(126, false, "Structural pre-check failed");
+  } else {
+    const v126 = await askValidator(126, "Retriever recalls screenshot capability when asked about verification", recallText, "Must mention screenshot tools (Puppeteer or Playwright) with actual usage examples or commands. Should be actionable, not just 'use a screenshot tool'.");
+    validatorCost += v126.cost;
+    record(126, v126.passed, v126.reason);
+  }
 
   // Cleanup
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

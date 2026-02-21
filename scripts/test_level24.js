@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -37,6 +38,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level24-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 24: Recursive Scaffolding ("Je construis sur mes constructions")`);
   console.log(`${"═".repeat(60)}`);
@@ -150,8 +152,14 @@ This workflow should be a reusable script that CALLS the backup script first.`
   console.log(`  Migration learnings: ${migrateLearnings.rows.length}`);
 
   const l2Created = migrateTools.rows.length >= 1 || migratePatterns.rows.length >= 1 || migrateLearnings.rows.length >= 1;
-  record(97, l2Created,
-    `Block L2: tools=${migrateTools.rows.length}, patterns=${migratePatterns.rows.length}, learnings=${migrateLearnings.rows.length}`);
+  if (!l2Created) {
+    record(97, false, "Structural pre-check failed: no migration tools/patterns/learnings created");
+  } else {
+    const dbRows97 = JSON.stringify({ tools: migrateTools.rows, patterns: migratePatterns.rows, learnings: migrateLearnings.rows });
+    const v97 = await askValidator(97, "Migration-related knowledge exists in the DB", dbRows97, "At least one pattern, tool, or learning should have 'migration' in its name. This confirms the Learner saved knowledge about database migrations from the observation.");
+    validatorCost += v97.cost;
+    record(97, v97.passed, v97.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -228,8 +236,13 @@ This workflow should be a reusable script that CALLS the backup script first.`
   console.log(`  Mentions migration: ${mentionsMigration}`);
   console.log(`  Mentions safety: ${mentionsSafety}`);
 
-  record(99, discoveryText.length > 100 && (mentionsBackup || mentionsMigration),
-    `Discovery chain: backup=${mentionsBackup}, migration=${mentionsMigration}, safety=${mentionsSafety}, length=${discoveryText.length}`);
+  if (!(discoveryText.length > 100)) {
+    record(99, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v99 = await askValidator(99, "Learner enriches existing knowledge with new details", discoveryText, "The enriched entry should contain BOTH the original insight AND the new details. Should be richer than either alone.");
+    validatorCost += v99.cost;
+    record(99, v99.passed, v99.reason);
+  }
 
   // Cost
   const logContent = readLog(orch.logFile);
@@ -238,6 +251,8 @@ This workflow should be a reusable script that CALLS the backup script first.`
   console.log(`\n=== Cost Summary ===`);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   console.log(`  API calls: ${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

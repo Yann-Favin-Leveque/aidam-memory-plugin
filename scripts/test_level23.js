@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -36,6 +37,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level23-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 23: Context-Aware Behavior ("Je m'adapte")`);
   console.log(`${"═".repeat(60)}`);
@@ -132,8 +134,13 @@ GOTCHAS:
   console.log(`  Has basics: ${hasBasics}`);
   console.log(`  Has Spring steps: ${hasSpringSteps}`);
 
-  record(93, beginnerText.length > 100 && (hasBasics || hasSpringSteps),
-    `Beginner query: basics=${hasBasics}, steps=${hasSpringSteps}, length=${beginnerText.length}`);
+  if (!(beginnerText.length > 100)) {
+    record(93, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v93 = await askValidator(93, "Retriever returns JWT/authentication knowledge for a Spring Boot project", beginnerText, "The retrieval should contain relevant JWT authentication knowledge: filter chain setup, token handling, security configuration, or endpoint protection. Should provide concrete implementation details like code snippets or configuration.");
+    validatorCost += v93.cost;
+    record(93, v93.passed, v93.reason);
+  }
 
   await new Promise(r => setTimeout(r, 8000));
 
@@ -190,8 +197,13 @@ GOTCHAS:
   // At least 2 out of 3 queries should have returned content
   const queriesWithContent = [beginnerText.length > 100, midText.length > 100, expertText.length > 100].filter(Boolean).length;
 
-  record(95, queriesWithContent >= 2 && hasMidContent,
-    `Context switch: beginner=${beginnerText.length}ch, mid=${midText.length}ch, expert=${expertText.length}ch, queries=${queriesWithContent}/3, midContent=${hasMidContent}`);
+  if (!(queriesWithContent >= 2 && expertText.length > 100)) {
+    record(95, false, "Structural pre-check failed: not enough queries returned content");
+  } else {
+    const v95 = await askValidator(95, "Retriever adapts response to expert context", expertText, "For an expert context, response should skip basics, focus on edge cases/gotchas, and assume prior knowledge");
+    validatorCost += v95.cost;
+    record(95, v95.passed, v95.reason);
+  }
 
   // Cost
   const logContent = readLog(orch.logFile);
@@ -200,6 +212,8 @@ GOTCHAS:
   console.log(`\n=== Cost Summary ===`);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   console.log(`  API calls: ${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

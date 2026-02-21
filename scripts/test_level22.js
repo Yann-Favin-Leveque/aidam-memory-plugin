@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -36,6 +37,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level22-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 22: Scientific/Math Memory ("Je calcule")`);
   console.log(`${"═".repeat(60)}`);
@@ -114,8 +116,13 @@ Formula: optimal_batch ≈ 500 + (available_heap_MB / 10), capped at 1500.`
   console.log(`  Mentions optimal range: ${mentionsOptimal}`);
   console.log(`  Mentions degradation: ${mentionsDegradation}`);
 
-  record(89, formulaText.length > 100 && mentionsBatch && mentionsOptimal,
-    `Formula recall: batch=${mentionsBatch}, optimal=${mentionsOptimal}, degradation=${mentionsDegradation}, length=${formulaText.length}`);
+  if (!(formulaText.length > 100 && mentionsBatch)) {
+    record(89, false, "Structural pre-check failed: text too short or no batch mention");
+  } else {
+    const v89 = await askValidator(89, "Retriever recalls batch size formula with correct values", formulaText, "Must include specific numeric values (batch sizes like 500, 1000) and the relationship between batch size and performance. Should mention degradation at large sizes.");
+    validatorCost += v89.cost;
+    record(89, v89.passed, v89.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -184,8 +191,13 @@ B-tree index on integer column: ~32MB overhead for 1M rows.`
   console.log(`  Mentions indexing: ${mentionsIndexChain}`);
   console.log(`  Combined knowledge: ${combined}`);
 
-  record(91, chainText.length > 100 && combined,
-    `Optimization chain: batch=${mentionsBatchChain}, index=${mentionsIndexChain}, combined=${combined}, length=${chainText.length}`);
+  if (!(chainText.length > 100)) {
+    record(91, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v91 = await askValidator(91, "Retriever recalls both batch processing and indexing knowledge", chainText, "The retrieval should contain knowledge about both batch processing AND indexing/performance optimization. Both topics should be represented in the response, providing useful details for optimizing write performance.");
+    validatorCost += v91.cost;
+    record(91, v91.passed, v91.reason);
+  }
 
   // Cost
   const logContent = readLog(orch.logFile);
@@ -194,6 +206,8 @@ B-tree index on integer column: ~32MB overhead for 1M rows.`
   console.log(`\n=== Cost Summary ===`);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   console.log(`  API calls: ${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

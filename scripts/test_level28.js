@@ -14,6 +14,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -37,6 +38,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level28-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 28: Full Autonomous Intelligence ("Je suis AIDAM")`);
   console.log(`${"═".repeat(60)}`);
@@ -116,6 +118,7 @@ async function run() {
   ];
 
   let retrievalHits = 0;
+  const retrievalDetails = [];
   for (let i = 0; i < prompts.length; i++) {
     const hash = await injectPrompt(SID, prompts[i]);
     console.log(`  Prompt ${i+1}/5 (hash=${hash}): ${prompts[i].slice(0, 80)}...`);
@@ -123,13 +126,20 @@ async function run() {
     const text = result?.context_text || "";
     const hit = text.length > 100;
     if (hit) retrievalHits++;
+    retrievalDetails.push({ prompt: prompts[i].slice(0, 80), type: result?.context_type || "timeout", length: text.length, hit });
     console.log(`    Type: ${result?.context_type || "timeout"}, Length: ${text.length}, Hit: ${hit}`);
     if (i < prompts.length - 1) await new Promise(r => setTimeout(r, 8000));
   }
 
   console.log(`\n  Retrieval hits: ${retrievalHits}/5`);
-  record(113, retrievalHits >= 3,
-    `Marathon retrieval: hits=${retrievalHits}/5`);
+
+  if (!(retrievalHits >= 1)) {
+    record(113, false, "Structural pre-check failed: zero retrieval hits");
+  } else {
+    const v113 = await askValidator(113, "Marathon retrieval — 5 prompts, expect relevant hits", JSON.stringify(retrievalDetails), "At least 3 out of 5 retrieval prompts should return relevant context. Each hit should be pertinent to its specific prompt topic (flaky tests, Docker, JVM, batch uploads, load testing).");
+    validatorCost += v113.cost;
+    record(113, v113.passed, v113.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -197,8 +207,13 @@ async function run() {
   const uniqueRefs = [...new Set(refs)];
   console.log(`  Unique references: ${uniqueRefs.length}`);
 
-  record(115, complexText.length > 200 && aspCovered >= 3,
-    `Autonomous workflow: aspects=${aspCovered}/6, refs=${uniqueRefs.length}, length=${complexText.length}`);
+  if (!(complexText.length > 200)) {
+    record(115, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v115 = await askValidator(115, "Autonomous workflow — complex prompt covers multiple aspects", complexText, "Response must coherently address a production deployment scenario covering at least 3 of: JVM settings, connection pooling, Docker optimization, monitoring, security, performance. Should synthesize from multiple learned patterns, not just list them.");
+    validatorCost += v115.cost;
+    record(115, v115.passed, v115.reason);
+  }
 
   // ═══════════════════════════════════════════════════════════
   // TEST #116: Cost efficiency
@@ -213,6 +228,8 @@ async function run() {
 
   record(116, totalCost < 2.50,
     `Cost efficiency: $${totalCost.toFixed(4)} (limit: $2.50), calls=${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

@@ -13,6 +13,7 @@ const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -36,6 +37,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level32-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 32: Self-Testing ("Je m'auto-teste")`);
   console.log(`${"=".repeat(60)}`);
@@ -102,8 +104,13 @@ async function run() {
   `);
   console.log(`  Test patterns: ${testPatterns.rows.length}, Test learnings: ${testLearnings.rows.length}`);
 
-  record(133, processed133 >= 2 && (testPatterns.rows.length > 0 || testLearnings.rows.length > 0),
-    `Pattern extraction: processed=${processed133}/3, patterns=${testPatterns.rows.length}, learnings=${testLearnings.rows.length}`);
+  if (!(processed133 >= 2 && (testPatterns.rows.length > 0 || testLearnings.rows.length > 0))) {
+    record(133, false, "Structural pre-check failed");
+  } else {
+    const v133 = await askValidator(133, "Learner extracts common test pattern from 3 test scripts", { patterns: testPatterns.rows, learnings: testLearnings.rows }, "Should identify the common testing pattern (inject observation -> wait for processing -> verify DB). Must describe the test framework structure.");
+    validatorCost += v133.cost;
+    record(133, v133.passed, v133.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -124,8 +131,13 @@ async function run() {
   console.log(`  Has test concepts: ${hasTestConcepts}`);
 
   // Pass if we got useful context back (patterns about testing, error handling, etc.)
-  record(134, genText.length > 50 && (hasTestConcepts || hasTestStructure),
-    `Test generation: length=${genText.length}, structure=${hasTestStructure}, concepts=${hasTestConcepts}`);
+  if (!(genText.length > 50 && (hasTestConcepts || hasTestStructure))) {
+    record(134, false, "Structural pre-check failed");
+  } else {
+    const v134 = await askValidator(134, "Retriever returns useful context for writing a deduplication test", genText, "Must provide relevant testing patterns or examples that would help write an error deduplication test. Should mention DB verification, assertion patterns.");
+    validatorCost += v134.cost;
+    record(134, v134.passed, v134.reason);
+  }
 
   // =============================================
   // TEST #135: Test validity (node --check)
@@ -202,6 +214,7 @@ async function run() {
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -124,6 +125,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 20: Incremental Reasoning ("Je raisonne")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SID}\n`);
 
   await cleanSession(SID);
@@ -225,8 +227,14 @@ async function run() {
   console.log(`  Mentions CacheService/Redis: ${mentionsCache}`);
   console.log(`  Full chain traced: ${mentionsChain}`);
 
-  record(81, deductText.length > 100 && (mentionsAuth || mentionsCache),
-    `Transitive deduction: chain=${mentionsChain}, user=${mentionsUser}, auth=${mentionsAuth}, cache=${mentionsCache}, length=${deductText.length}`);
+  const preCheck81 = deductText.length > 100 && (mentionsAuth || mentionsCache);
+  if (preCheck81) {
+    const v81 = await askValidator(81, "Retriever traces dependency chain (A->B->C)", deductText, "Must identify the full dependency chain -- changing A affects B which affects C. Should explicitly mention the transitive impact, not just list all services.");
+    validatorCost += v81.cost;
+    record(81, v81.passed, `${v81.reason}`);
+  } else {
+    record(81, false, `Structural pre-check failed: auth=${mentionsAuth}, cache=${mentionsCache}, length=${deductText.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -309,8 +317,14 @@ async function run() {
   console.log(`  Mentions cascade: ${mentionsCascade}`);
   console.log(`  Identifies root cause: ${mentionsRoot}`);
 
-  record(83, causalText.length > 100 && (mentionsRedis || mentionsOOM),
-    `Causal chain: oom=${mentionsOOM}, redis=${mentionsRedis}, cascade=${mentionsCascade}, root=${mentionsRoot}, length=${causalText.length}`);
+  const preCheck83 = causalText.length > 100 && (mentionsRedis || mentionsOOM);
+  if (preCheck83) {
+    const v83 = await askValidator(83, "Retriever identifies root cause in chain", causalText, "Must identify the root cause (not just symptoms) and explain the cascade effect. Should connect OOM/memory issues to the specific service dependency.");
+    validatorCost += v83.cost;
+    record(83, v83.passed, `${v83.reason}`);
+  } else {
+    record(83, false, `Structural pre-check failed: redis=${mentionsRedis}, oom=${mentionsOOM}, length=${causalText.length}`);
+  }
 
   // ═══════════════════════════════════════════════════════════
   const logContent = readLog(orch.logFile);
@@ -326,6 +340,7 @@ async function run() {
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

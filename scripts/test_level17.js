@@ -15,6 +15,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -136,6 +137,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 17: Companion Memory ("Je me souviens de toi")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SESSION_ID}`);
   console.log(`Test tag: ${TEST_TAG}\n`);
 
@@ -235,8 +237,13 @@ async function run() {
   console.log(`  Language learnings: ${langLearnings.rows.length}`);
 
   const langSaved = langPrefs.rows.length > 0 || langLearnings.rows.length > 0;
-  record(68, langSaved,
-    `Language pref: prefs=${langPrefs.rows.length}, learnings=${langLearnings.rows.length}`);
+  if (langSaved) {
+    const v68 = await askValidator(68, "Learner captured language/naming preferences from code observations", { langPrefs: langPrefs.rows, langLearnings: langLearnings.rows }, "Should have captured French language preferences for commits/comments and/or coding style conventions. At least one preference or learning about language/naming conventions should exist.");
+    validatorCost += v68.cost;
+    record(68, v68.passed, `${v68.reason}`);
+  } else {
+    record(68, false, `Structural pre-check failed: prefs=${langPrefs.rows.length}, learnings=${langLearnings.rows.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -308,8 +315,14 @@ git add -A && git commit -m "feat: add notification service" && git push
   console.log(`  Mentions indentation: ${mentionsIndent}`);
   console.log(`  Mentions conventions: ${mentionsConventions}`);
 
-  record(70, prefText.length > 50,
-    `Preference recall: camel=${mentionsCamel}, indent=${mentionsIndent}, conventions=${mentionsConventions}, length=${prefText.length}`);
+  const preCheck70 = prefText.length > 50;
+  if (preCheck70) {
+    const v70 = await askValidator(70, "Retriever recalls coding style preferences when asked about Java coding conventions", prefText, "The retrieval should include coding style information: naming conventions (camelCase), indentation, Optional usage, French language preferences, or other coding standards. Content should be relevant to the question about Java coding style.");
+    validatorCost += v70.cost;
+    record(70, v70.passed, `${v70.reason}`);
+  } else {
+    record(70, false, `Structural pre-check failed: length=${prefText.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -359,6 +372,7 @@ git add -A && git commit -m "feat: add notification service" && git push
   await killSession(SESSION_ID, orch.proc);
   await cleanSession(SESSION_ID);
 
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

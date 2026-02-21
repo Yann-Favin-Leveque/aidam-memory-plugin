@@ -17,6 +17,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -40,6 +41,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level34-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 34: Multi-Domain Problem Solving`);
   console.log(`${"=".repeat(60)}`);
@@ -155,8 +157,13 @@ async function run() {
   const domainCount = Object.values(domains).filter(Boolean).length;
   console.log(`  Domains found: ${JSON.stringify(domains)} (${domainCount}/4)`);
 
-  record(147, cdText.length > 100 && domainCount >= 2,
-    `Cross-domain: length=${cdText.length}, domains=${domainCount}/4`);
+  if (!(cdText.length > 100 && domainCount >= 2)) {
+    record(147, false, "Structural pre-check failed");
+  } else {
+    const v147 = await askValidator(147, "Cross-domain recall — query about memory/performance returns multi-domain knowledge", cdText, "Must surface knowledge from at least 2 different domains (ML, K8s, React, Security) when asked about memory/performance issues. Should connect them thematically.");
+    validatorCost += v147.cost;
+    record(147, v147.passed, v147.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -175,8 +182,13 @@ async function run() {
   // Pass if retriever found any performance-related knowledge from other domains
   // Also pass if retriever returns SKIP (no relevant results) — legitimate when no profiling-specific knowledge exists
   const dtType = dtResult?.context_type || "none";
-  record(148, (hasTransfer && hasPerf) || dtType === "none",
-    `Domain transfer: length=${dtText.length}, perf concepts=${hasPerf}, type=${dtType}`);
+  if (!((hasTransfer && hasPerf) || dtType === "none")) {
+    record(148, false, "Structural pre-check failed");
+  } else {
+    const v148 = await askValidator(148, "Domain transfer — performance knowledge applied to new context", dtText || "", "If non-empty: must connect performance knowledge from one domain to another. If empty: acceptable SKIP if no relevant performance knowledge exists for the specific query.");
+    validatorCost += v148.cost;
+    record(148, v148.passed, v148.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -199,8 +211,13 @@ async function run() {
   `);
   console.log(`  Cost learnings: ${costCheck.rows.length}`);
 
-  record(149, st149 === "completed",
-    `Cost observation: status=${st149}, learnings=${costCheck.rows.length}`);
+  if (!(st149 === "completed")) {
+    record(149, false, "Structural pre-check failed");
+  } else {
+    const v149 = await askValidator(149, "Cost observation — Learner saves cost patterns", costCheck.rows.length > 0 ? costCheck.rows : { status: st149, learningsFound: costCheck.rows.length }, "Must save a learning or pattern about AIDAM session costs. Should identify the insight that simple tasks waste budget on retrieval while complex tasks benefit.");
+    validatorCost += v149.cost;
+    record(149, v149.passed, v149.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -224,6 +241,7 @@ async function run() {
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

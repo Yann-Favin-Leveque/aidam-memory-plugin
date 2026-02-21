@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -160,6 +161,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 14: Recursive Meta-Learning ("Je construis")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SESSION_ID}`);
   console.log(`Test tag: ${TEST_TAG}\n`);
 
@@ -287,8 +289,14 @@ async function run() {
   console.log(`  Mentions curl/endpoints: ${mentionsCurl}`);
   console.log(`  Mentions tool/script: ${mentionsTool}`);
 
-  record(55, mentionsHealth && discoveryText.length > 100,
-    `Skill discovery: health=${mentionsHealth}, curl=${mentionsCurl}, tool=${mentionsTool}, length=${discoveryText.length}`);
+  const preCheck55 = mentionsHealth && discoveryText.length > 100;
+  if (preCheck55) {
+    const v55 = await askValidator(55, "Retriever surfaces relevant health-check knowledge when asked about verifying ecopaths API endpoints", { discoveryText: discoveryText.slice(0, 2000), mentionsHealth, mentionsCurl, mentionsTool, mentionsEndpoint }, "The retrieval result should mention health check commands, curl endpoints, or a tool/pattern related to verifying the ecopaths API. It should be relevant to the user's question about checking API health after restart.");
+    validatorCost += v55.cost;
+    record(55, v55.passed, `${v55.reason}`);
+  } else {
+    record(55, false, `Structural pre-check failed: health=${mentionsHealth}, length=${discoveryText.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -362,8 +370,13 @@ async function run() {
   if (metaLearnings.rows.length > 0) referencesHealthCheck = true;
   if (drilldowns.rows.length > 0) referencesHealthCheck = true;
 
-  record(56, compositionCreated,
-    `Skill composition: meta_tools=${metaTools.rows.length}, patterns=${metaPatterns.rows.length}, learnings=${metaLearnings.rows.length}, drilldowns=${drilldowns.rows.length}, references_health=${referencesHealthCheck}`);
+  if (compositionCreated) {
+    const v56 = await askValidator(56, "Learner composed higher-order knowledge by observing a deploy+health-check workflow", { metaTools: metaTools.rows, metaPatterns: metaPatterns.rows, metaLearnings: metaLearnings.rows, drilldowns: drilldowns.rows }, "The Learner should have saved SOME form of composed knowledge about the deploy+verify workflow: a meta-tool, a pattern mentioning both deploy and health/verify, a learning linking the two, or drilldown enrichments. At least one artifact should exist that connects deployment with verification.");
+    validatorCost += v56.cost;
+    record(56, v56.passed, `${v56.reason}`);
+  } else {
+    record(56, false, `Structural pre-check failed: meta_tools=${metaTools.rows.length}, patterns=${metaPatterns.rows.length}, learnings=${metaLearnings.rows.length}, drilldowns=${drilldowns.rows.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -393,8 +406,14 @@ async function run() {
   console.log(`  Mentions verify/health: ${mentionsVerify}`);
   console.log(`  Both (composed knowledge): ${mentionsBoth}`);
 
-  record(57, metaText.length > 100 && mentionsDeploy,
-    `Meta-skill discovery: deploy=${mentionsDeploy}, verify=${mentionsVerify}, both=${mentionsBoth}, length=${metaText.length}`);
+  const preCheck57 = metaText.length > 100 && mentionsDeploy;
+  if (preCheck57) {
+    const v57 = await askValidator(57, "Retriever surfaces composed deploy+verify workflow when asked about full deployment", { metaText: metaText.slice(0, 2000), mentionsDeploy, mentionsVerify, mentionsBoth }, "The retrieval result should describe a deployment workflow that includes BOTH build/deploy steps AND verification/health-check steps. It should be relevant to deploying and verifying ecopaths, mentioning commands like mvn, docker, az, curl, or references to health endpoints.");
+    validatorCost += v57.cost;
+    record(57, v57.passed, `${v57.reason}`);
+  } else {
+    record(57, false, `Structural pre-check failed: deploy=${mentionsDeploy}, length=${metaText.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -485,6 +504,7 @@ async function run() {
   await killSession(SESSION_ID, orch.proc);
   await cleanSession(SESSION_ID);
 
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

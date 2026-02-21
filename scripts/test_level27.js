@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -37,6 +38,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 async function run() {
   const SID_A = `level27a-${Date.now()}`;
   const SID_B = `level27b-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 27: Multi-Project Intelligence ("Je collabore")`);
   console.log(`${"═".repeat(60)}`);
@@ -120,8 +122,16 @@ Prevention: Always configure timeouts on ALL external HTTP clients.`
   console.log("Warm-up B complete.\n");
   await new Promise(r => setTimeout(r, 8000));
 
-  record(109, startedB,
-    `Project B context: started=${startedB}, slug=other-project`);
+  if (!startedB) {
+    record(109, false, "Structural pre-check failed: orchestrator B did not start");
+  } else {
+    // Check if any multi-step workflow patterns exist
+    const workflowPatterns = await dbQuery("SELECT id, name, context FROM patterns WHERE name ILIKE '%workflow%' OR name ILIKE '%multi%step%' OR context ILIKE '%workflow%' OR context ILIKE '%step%1%step%2%' ORDER BY id DESC LIMIT 5");
+    const actual109 = JSON.stringify(workflowPatterns.rows);
+    const v109 = await askValidator(109, "System has workflow/pipeline patterns stored", actual109.length > 10 ? actual109 : "Orchestrator B started, patterns available: " + actual109, "At least one pattern should relate to workflows, pipelines, deployment steps, or multi-step processes. Pattern names should indicate they cover more than a single action.");
+    validatorCost += v109.cost;
+    record(109, v109.passed, v109.reason);
+  }
 
   // TEST #110: Cross-project transfer
   console.log("\n=== Test #110: Cross-project transfer ===\n");
@@ -176,8 +186,13 @@ Prevention: Always configure timeouts on ALL external HTTP clients.`
 
   // Lenient: either the Retriever returns relevant architecture info or correctly
   // notes it doesn't know about "other-project"
-  record(111, hasContent || archResult?.context_type === "none",
-    `Project-specific filter: ecopaths=${mentionsEcopaths}, other=${mentionsOtherProject}, hasContent=${hasContent}, type=${archResult?.context_type}`);
+  if (!(hasContent)) {
+    record(111, false, "Structural pre-check failed: no content returned");
+  } else {
+    const v111 = await askValidator(111, "Retriever returns relevant architecture/workflow knowledge", archText, "The retrieval should contain relevant technical knowledge: patterns, workflows, architecture details, or deployment steps. Content should be useful for understanding a project's architecture.");
+    validatorCost += v111.cost;
+    record(111, v111.passed, v111.reason);
+  }
 
   // Cost
   const logA = readLog(orchA.logFile);
@@ -188,6 +203,8 @@ Prevention: Always configure timeouts on ALL external HTTP clients.`
   console.log(`  Project A cost: $${costA.toFixed(4)}`);
   console.log(`  Project B cost: $${costB.toFixed(4)}`);
   console.log(`  Total cost: $${(costA + costB).toFixed(4)}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator B Log (last 2000 chars) ---`);
   console.log(logB.slice(-2000));

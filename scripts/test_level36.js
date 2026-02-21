@@ -14,6 +14,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -37,6 +38,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level36-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 36: Self-Improvement ("Je m'ameliore")`);
   console.log(`${"=".repeat(60)}`);
@@ -84,8 +86,13 @@ async function run() {
   console.log(`  Weakness learnings: ${weakCheck.rows.length}`);
   weakCheck.rows.forEach(r => console.log(`    ${r.topic}: ${(r.insight || "").slice(0, 80)}...`));
 
-  record(160, weakCheck.rows.length > 0 || st159 === "completed",
-    `Weakness ID: ${weakCheck.rows.length} learnings about retriever weaknesses`);
+  if (!(weakCheck.rows.length > 0 || st159 === "completed")) {
+    record(160, false, "Structural pre-check failed");
+  } else {
+    const v160 = await askValidator(160, "Learner identifies AIDAM's own weaknesses", weakCheck.rows.length > 0 ? weakCheck.rows : { status: st159, learningsFound: 0 }, "Must identify specific weaknesses in the Retriever (e.g., wasted retrievals on simple prompts, low hit rate). Should cite concrete observations, not vague claims.");
+    validatorCost += v160.cost;
+    record(160, v160.passed, v160.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -123,8 +130,13 @@ async function run() {
   console.log(`  Mentions weaknesses: ${hasWeakness}`);
   console.log(`  Mentions solutions: ${hasSolution}`);
 
-  record(162, hasSpecific && (hasWeakness || hasSolution),
-    `Improvement suggestion: length=${impText.length}, weakness=${hasWeakness}, solutions=${hasSolution}`);
+  if (!(hasSpecific && (hasWeakness || hasSolution))) {
+    record(162, false, "Structural pre-check failed");
+  } else {
+    const v162 = await askValidator(162, "Retriever suggests improvements with evidence", impText, "Must reference identified weaknesses AND suggest solutions. Should connect the problem (vague prompts -> poor results) to potential fixes (query classification, intent detection).");
+    validatorCost += v162.cost;
+    record(162, v162.passed, v162.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -148,13 +160,19 @@ async function run() {
   `);
   console.log(`  Meta-patterns: ${patMeta.rows.length}`);
 
-  record(163, metaCheck.rows.length > 0 || patMeta.rows.length > 0,
-    `Meta-learning: learnings=${metaCheck.rows.length}, patterns=${patMeta.rows.length}`);
+  if (!(metaCheck.rows.length > 0 || patMeta.rows.length > 0)) {
+    record(163, false, "Structural pre-check failed");
+  } else {
+    const v163 = await askValidator(163, "Meta-learning about AIDAM itself persisted", metaCheck.rows.length > 0 ? metaCheck.rows : patMeta.rows, "At least one learning or pattern specifically about AIDAM's own behavior, performance, or improvement opportunities. Must be self-referential.");
+    validatorCost += v163.cost;
+    record(163, v163.passed, v163.reason);
+  }
 
   // Cleanup
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

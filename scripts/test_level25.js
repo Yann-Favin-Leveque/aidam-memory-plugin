@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 // Load .env from project root
 const envPath = path.join(__dirname, "..", ".env");
@@ -43,6 +44,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level25-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 25: Self-Correction ("Je me corrige")`);
   console.log(`${"═".repeat(60)}`);
@@ -149,8 +151,23 @@ Previous knowledge that "10 is the recommended default" is INCORRECT for product
   const poolLearnings = afterLearnings.rows.filter(r => /pool/i.test(r.topic || "") || /hikari/i.test(r.topic || ""));
   console.log(`  Pool-specific learnings: ${poolLearnings.length}`);
 
-  record(102, hasFormula,
-    `Version check: formula_present=${hasFormula}, pool_learnings=${poolLearnings.length}, drilldowns=${afterDrilldowns.rows.length}`);
+  if (!(afterLearnings.rows.length >= 1)) {
+    record(101, false, "Structural pre-check failed: no learnings found after contradiction");
+  } else {
+    const dbEntries101 = JSON.stringify({ learnings: afterLearnings.rows, drilldowns: afterDrilldowns.rows });
+    const v101 = await askValidator(101, "Learner has PostgreSQL connection pooling knowledge in memory", dbEntries101, "At least one learning or drilldown should contain PostgreSQL connection pool configuration knowledge: HikariCP settings, pool sizing formula, or optimal connection count. The knowledge should be actionable.");
+    validatorCost += v101.cost;
+    record(101, v101.passed, v101.reason);
+  }
+
+  if (!(afterLearnings.rows.length >= 1)) {
+    record(102, false, "Structural pre-check failed: no learnings to check for duplicates");
+  } else {
+    const dbEntries102 = JSON.stringify({ learnings: afterLearnings.rows, pool_learnings: poolLearnings });
+    const v102 = await askValidator(102, "Pool-specific learnings exist with correct configuration details", dbEntries102, "At least one pool-related learning should exist with specific connection pool configuration details. The content should include numerical values or formulas for pool sizing.");
+    validatorCost += v102.cost;
+    record(102, v102.passed, v102.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -187,6 +204,8 @@ Previous knowledge that "10 is the recommended default" is INCORRECT for product
   console.log(`\n=== Cost Summary ===`);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   console.log(`  API calls: ${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

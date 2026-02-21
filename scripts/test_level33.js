@@ -15,6 +15,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -38,6 +39,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level33-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 33: Autonomous Debugging + Web Research ("Je debogue")`);
   console.log(`${"=".repeat(60)}`);
@@ -94,8 +96,13 @@ async function run() {
   const hasFix = /qualify|table|alias|column|reference/i.test(diagText);
   console.log(`  Contains fix guidance: ${hasFix}`);
 
-  record(138, diagText.length > 50 && hasFix,
-    `Memory diagnosis: length=${diagText.length}, has fix=${hasFix}`);
+  if (!(diagText.length > 50 && hasFix)) {
+    record(138, false, "Structural pre-check failed");
+  } else {
+    const v138 = await askValidator(138, "Retriever diagnoses known error from memory", diagText, "Must identify the specific error (column session_id not found) and provide the correct fix (qualify column with table name). Should reference the stored error_solution.");
+    validatorCost += v138.cost;
+    record(138, v138.passed, v138.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -154,8 +161,13 @@ async function run() {
   const hasPgTrgm = errorCheck.rows.some(r =>
     /pg_trgm|extension/i.test(r.solution || "") || /pg_trgm|extension/i.test(r.root_cause || ""));
 
-  record(141, errorCheck.rows.length > 0 && hasPgTrgm,
-    `Solution persisted: count=${errorCheck.rows.length}, mentions pg_trgm=${hasPgTrgm}`);
+  if (!(errorCheck.rows.length > 0 && hasPgTrgm)) {
+    record(141, false, "Structural pre-check failed");
+  } else {
+    const v141 = await askValidator(141, "Unknown error + web research saved as error_solution", errorCheck.rows, "Saved error must have: specific error_signature mentioning UndefinedFunction or similarity, solution mentioning CREATE EXTENSION pg_trgm, and root_cause explaining the missing extension.");
+    validatorCost += v141.cost;
+    record(141, v141.passed, v141.reason);
+  }
 
   await new Promise(r => setTimeout(r, 5000));
 
@@ -184,7 +196,7 @@ async function run() {
 
   // Also check errors_solutions — the Learner may store as error rather than pattern
   const errorExtCheck = await dbQuery(`
-    SELECT error_signature FROM errors_solutions
+    SELECT error_signature, solution FROM errors_solutions
     WHERE solution ILIKE '%CREATE EXTENSION%' OR error_signature ILIKE '%extension%'
        OR error_signature ILIKE '%UndefinedFunction%' OR solution ILIKE '%pg_trgm%'
     ORDER BY created_at DESC LIMIT 5
@@ -193,13 +205,19 @@ async function run() {
 
   // Any stored knowledge about missing extensions counts (pattern, learning, or error)
   const hasGeneralPattern = patternCheck.rows.length > 0 || learningCheck.rows.length > 0 || errorExtCheck.rows.length > 0;
-  record(142, hasGeneralPattern,
-    `Cross-error pattern: patterns=${patternCheck.rows.length}, learnings=${learningCheck.rows.length}, errors=${errorExtCheck.rows.length}`);
+  if (!hasGeneralPattern) {
+    record(142, false, "Structural pre-check failed");
+  } else {
+    const v142 = await askValidator(142, "System has PostgreSQL extension-related knowledge", { patterns: patternCheck.rows, learnings: learningCheck.rows, errors: errorExtCheck.rows }, "At least one entry should relate to PostgreSQL extensions (pg_trgm, unaccent, CREATE EXTENSION, or similar). An error entry about missing function/extension with a CREATE EXTENSION solution counts as valid.");
+    validatorCost += v142.cost;
+    record(142, v142.passed, v142.reason);
+  }
 
   // Cleanup
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -135,6 +136,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 16: Code Comprehension ("Je comprends le code")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SESSION_ID}`);
   console.log(`Test tag: ${TEST_TAG}\n`);
 
@@ -258,8 +260,13 @@ async function run() {
   n1Errors.rows.forEach(e => console.log(`    [#${e.id}] ${e.error_signature}`));
 
   const n1Detected = n1Patterns.rows.length > 0 || n1Learnings.rows.length > 0 || n1Errors.rows.length > 0;
-  record(64, n1Detected,
-    `Anti-pattern: patterns=${n1Patterns.rows.length}, learnings=${n1Learnings.rows.length}, errors=${n1Errors.rows.length}`);
+  if (n1Detected) {
+    const v64 = await askValidator(64, "Learner detected N+1 anti-pattern and stored relevant knowledge", { n1Patterns: n1Patterns.rows, n1Learnings: n1Learnings.rows, n1Errors: n1Errors.rows }, "The system should have N+1 query related entries: patterns with solutions (e.g., JOIN FETCH, batch loading), learnings about detection, or error entries with root cause and fix. At least one entry should provide actionable guidance for fixing N+1 queries.");
+    validatorCost += v64.cost;
+    record(64, v64.passed, `${v64.reason}`);
+  } else {
+    record(64, false, `Structural pre-check failed: patterns=${n1Patterns.rows.length}, learnings=${n1Learnings.rows.length}, errors=${n1Errors.rows.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -333,8 +340,14 @@ async function run() {
   console.log(`  Mentions endpoints: ${mentionsEndpoints}`);
   console.log(`  Architecture aspects: ${aspects}/4`);
 
-  record(66, archText.length > 100 && aspects >= 2,
-    `Architecture recall: aspects=${aspects}/4, jwt=${mentionsJWT}, filter=${mentionsFilter}, stateless=${mentionsStateless}, length=${archText.length}`);
+  const preCheck66 = archText.length > 100 && aspects >= 2;
+  if (preCheck66) {
+    const v66 = await askValidator(66, "Retriever provides rich security architecture recall covering JWT, filters, stateless config, and endpoints", archText, "The retrieval should provide comprehensive Spring Security knowledge: JWT setup, filter chain configuration, stateless session management, and/or endpoint security. Should include code snippets or concrete configuration details, not just generic advice.");
+    validatorCost += v66.cost;
+    record(66, v66.passed, `${v66.reason}`);
+  } else {
+    record(66, false, `Structural pre-check failed: aspects=${aspects}/4, length=${archText.length}`);
+  }
 
   // ═══════════════════════════════════════════════════════════
   // Cost + Logs
@@ -353,6 +366,7 @@ async function run() {
   await killSession(SESSION_ID, orch.proc);
   await cleanSession(SESSION_ID);
 
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

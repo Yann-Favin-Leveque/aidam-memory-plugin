@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -124,6 +125,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 18: Incremental Problem Solving ("Je résous")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SID}\n`);
 
   await cleanSession(SID);
@@ -190,8 +192,14 @@ async function run() {
   console.log(`  Learnings saved: ${lrnSaved.rows.length}`);
   lrnSaved.rows.forEach(l => console.log(`    [#${l.id}] ${l.topic}`));
 
-  record(72, totalSaved >= 2,
-    `Knowledge accumulation: errors=${errSaved.rows.length}, learnings=${lrnSaved.rows.length}, total=${totalSaved} (expected ≥2)`);
+  const preCheck72 = totalSaved >= 2;
+  if (preCheck72) {
+    const v72 = await askValidator(72, "System accumulated DB error knowledge from multiple error observations", { errors: errSaved.rows, learnings: lrnSaved.rows }, "The system should have stored multiple error entries covering different PostgreSQL problems (pool exhaustion, timeouts, deadlocks, encoding). Errors should have descriptive signatures and solutions. At least 2 distinct error types should be present.");
+    validatorCost += v72.cost;
+    record(72, v72.passed, `${v72.reason}`);
+  } else {
+    record(72, false, `Structural pre-check failed: errors=${errSaved.rows.length}, learnings=${lrnSaved.rows.length}, total=${totalSaved}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -257,8 +265,13 @@ async function run() {
   configLearnings.rows.forEach(l => console.log(`    [#${l.id}] ${l.topic}`));
 
   const depthAdded = drilldowns.rows.length > 0 || configLearnings.rows.length > 0;
-  record(74, depthAdded,
-    `Drilldown depth: drilldowns=${drilldowns.rows.length}, learnings=${configLearnings.rows.length}`);
+  if (depthAdded) {
+    const v74 = await askValidator(74, "Learner enriched knowledge with PostgreSQL config drilldowns and learnings", { drilldowns: drilldowns.rows, configLearnings: configLearnings.rows }, "Should have drilldown entries about configuration or PostgreSQL tuning, OR learnings about database configuration. At least one entry should contain actionable config details (memory settings, vacuum tuning, connection pool sizing, etc.).");
+    validatorCost += v74.cost;
+    record(74, v74.passed, `${v74.reason}`);
+  } else {
+    record(74, false, `Structural pre-check failed: drilldowns=${drilldowns.rows.length}, learnings=${configLearnings.rows.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -305,6 +318,7 @@ async function run() {
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

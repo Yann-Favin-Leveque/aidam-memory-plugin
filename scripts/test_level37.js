@@ -15,6 +15,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -38,6 +39,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level37-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 37: Teaching + Web Enrichment ("J'enseigne")`);
   console.log(`${"=".repeat(60)}`);
@@ -77,8 +79,13 @@ async function run() {
   console.log(`  Length: ${teachText.length}`);
   console.log(`  Preview: ${teachText.slice(0, 300)}...`);
 
-  record(164, teachText.length > 200 && /index/i.test(teachText),
-    `Tutorial generation: length=${teachText.length}`);
+  if (!(teachText.length > 200 && /index/i.test(teachText))) {
+    record(164, false, "Structural pre-check failed");
+  } else {
+    const v164 = await askValidator(164, "Tutorial generated from progressive learnings", teachText, "Must present PostgreSQL indexing knowledge in a structured, educational format. Should start with basics (B-tree) and progress to advanced topics (GIN, BRIN, partial indexes).");
+    validatorCost += v164.cost;
+    record(164, v164.passed, v164.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -94,8 +101,13 @@ async function run() {
   console.log(`  Basics: ${hasBasics}, Intermediate: ${hasIntermediate}, Advanced: ${hasAdvanced}, Gotchas: ${hasGotchas}`);
   console.log(`  Progression levels: ${progressionLevels}/4`);
 
-  record(165, progressionLevels >= 2,
-    `Progressive: levels=${progressionLevels}/4 (basics=${hasBasics}, intermed=${hasIntermediate}, advanced=${hasAdvanced}, gotchas=${hasGotchas})`);
+  if (!(progressionLevels >= 2)) {
+    record(165, false, "Structural pre-check failed");
+  } else {
+    const v165 = await askValidator(165, "Retriever returns PostgreSQL indexing knowledge covering multiple levels", teachText, "The retrieval should contain knowledge about PostgreSQL indexing covering at least 2 levels: basic indexes (B-tree, CREATE INDEX), intermediate (composite, multi-column), or advanced (partial, GIN, JSONB, tsvector). Content should be technically accurate.");
+    validatorCost += v165.cost;
+    record(165, v165.passed, v165.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -176,13 +188,19 @@ async function run() {
 
   // Pass if: (1) expert prompt got specific expert content, OR (2) Retriever SKIPed because
   // indexing content was already returned AND that content includes expert-level topics
-  record(169, (expertText.length > 50 && hasExpertContent) || (expertText.length === 0 && hasExpertInCombined),
-    `Adapted: length=${expertText.length}, expert=${hasExpertContent}, combined expert=${hasExpertInCombined}`);
+  if (!((expertText.length > 50 && hasExpertContent) || (expertText.length === 0 && hasExpertInCombined))) {
+    record(169, false, "Structural pre-check failed");
+  } else {
+    const v169 = await askValidator(169, "Adapted to expert level", expertText.length > 50 ? expertText : { expertText: "", combinedKnowledge: combinedKnowledge.slice(0, 2000) }, "If expert-level text provided: must skip basics, focus on gotchas/pitfalls/advanced topics. If empty but combined knowledge has expert topics: the system already provided this content in earlier responses.");
+    validatorCost += v169.cost;
+    record(169, v169.passed, v169.reason);
+  }
 
   // Cleanup
   const logContent = readLog(orch.logFile);
   const totalCost = extractCost(logContent);
   console.log(`\n  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);

@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const { askValidator } = require("./test_helpers.js");
 
 const DB = {
   host: "localhost", database: "claude_memory",
@@ -124,6 +125,7 @@ async function run() {
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 19: Cross-Domain Transfer ("Je transfère")`);
   console.log(`${"═".repeat(60)}`);
+  let validatorCost = 0;
   console.log(`Session ID: ${SID}\n`);
 
   await cleanSession(SID);
@@ -189,8 +191,13 @@ async function run() {
   console.log(`  Rate limit learnings: ${rateLearnings.rows.length}`);
 
   const rateSaved = ratePatterns.rows.length > 0 || rateLearnings.rows.length > 0;
-  record(76, rateSaved,
-    `Domain A: patterns=${ratePatterns.rows.length}, learnings=${rateLearnings.rows.length}`);
+  if (rateSaved) {
+    const v76 = await askValidator(76, "System has rate-limiting knowledge stored", { ratePatterns: ratePatterns.rows }, "At least one pattern should be about rate limiting, API throttling, or Bucket4j. The pattern name should clearly indicate it's about rate limiting or request throttling.");
+    validatorCost += v76.cost;
+    record(76, v76.passed, `${v76.reason}`);
+  } else {
+    record(76, false, `Structural pre-check failed: patterns=${ratePatterns.rows.length}, learnings=${rateLearnings.rows.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -258,8 +265,14 @@ async function run() {
   console.log(`  Mentions origin: ${mentionsOrigin}`);
   console.log(`  Mentions credentials: ${mentionsCredentials}`);
 
-  record(78, corsText.length > 50 && mentionsCors,
-    `CORS transfer: cors=${mentionsCors}, origin=${mentionsOrigin}, credentials=${mentionsCredentials}, length=${corsText.length}`);
+  const preCheck78 = corsText.length > 50 && mentionsCors;
+  if (preCheck78) {
+    const v78 = await askValidator(78, "Retriever recalls CORS/security configuration knowledge", corsText, "The retrieval should contain CORS configuration, security headers, or Spring Security cross-origin setup details. Should include code snippets or concrete configuration, not just generic advice.");
+    validatorCost += v78.cost;
+    record(78, v78.passed, `${v78.reason}`);
+  } else {
+    record(78, false, `Structural pre-check failed: cors=${mentionsCors}, length=${corsText.length}`);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -307,6 +320,7 @@ async function run() {
 
   await killSession(SID, orch.proc);
   await cleanSession(SID);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
   printSummary();
 }
 

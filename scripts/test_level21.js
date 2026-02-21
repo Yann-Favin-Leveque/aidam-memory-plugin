@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -36,6 +37,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level21-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 21: Task Decomposition ("Je planifie")`);
   console.log(`${"═".repeat(60)}`);
@@ -127,8 +129,13 @@ async function run() {
   console.log(`  Mentions deploy: ${mentionsDeploy}`);
   console.log(`  Aspects covered: ${aspectsDecomp}/3`);
 
-  record(85, decompText.length > 100 && aspectsDecomp >= 2,
-    `Task decomposition: aspects=${aspectsDecomp}/3, jwt=${mentionsJWT}, db=${mentionsDB}, deploy=${mentionsDeploy}, length=${decompText.length}`);
+  if (!(decompText.length > 100)) {
+    record(85, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v85 = await askValidator(85, "Retriever returns relevant knowledge for building an auth+user management feature", decompText, "The retrieval should contain relevant patterns, learnings, or errors about at least 2 of: JWT authentication, database setup/migration, or deployment. Content should be actionable and relevant to building a user management feature.");
+    validatorCost += v85.cost;
+    record(85, v85.passed, v85.reason);
+  }
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -173,8 +180,13 @@ async function run() {
   console.log(`  Mentions email/verification: ${mentionsEmail}`);
   console.log(`  Identifies gap: ${mentionsGap}`);
 
-  record(87, gapText.length > 100 && mentionsKnown,
-    `Gap identification: known=${mentionsKnown}, email=${mentionsEmail}, gap=${mentionsGap}, length=${gapText.length}`);
+  if (!(gapText.length > 100)) {
+    record(87, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v87 = await askValidator(87, "Retriever suggests what additional information is needed", gapText, "Must suggest specific areas to investigate or learn about. Should go beyond 'I don't know' to 'here's what you'd need to find out'.");
+    validatorCost += v87.cost;
+    record(87, v87.passed, v87.reason);
+  }
 
   // Cost
   const logContent = readLog(orch.logFile);
@@ -183,6 +195,8 @@ async function run() {
   console.log(`\n=== Cost Summary ===`);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   console.log(`  API calls: ${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -36,6 +37,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level26-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"═".repeat(60)}`);
   console.log(`  AIDAM Level 26: Generative Problem Solving ("Je cree des solutions")`);
   console.log(`${"═".repeat(60)}`);
@@ -161,8 +163,15 @@ Integration: Use correlation IDs from GlobalExceptionHandler for tracing.`
   console.log(`  Monitoring: ${mentionsMonitoring}`);
 
   const aspectsCovered = [mentionsAuth, mentionsCaching, mentionsRateLimit, mentionsErrors, mentionsMonitoring].filter(Boolean).length;
-  record(105, novelText.length > 200 && aspectsCovered >= 3,
-    `Novel problem: aspects=${aspectsCovered}/5, auth=${mentionsAuth}, cache=${mentionsCaching}, rate=${mentionsRateLimit}, errors=${mentionsErrors}, monitor=${mentionsMonitoring}, length=${novelText.length}`);
+
+  if (!(novelText.length > 200)) {
+    record(105, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const dbRows105 = JSON.stringify({ novelText: novelText.slice(0, 2000), aspectsCovered, mentionsAuth, mentionsCaching, mentionsRateLimit, mentionsErrors, mentionsMonitoring });
+    const v105 = await askValidator(105, "Learner generates a reusable tool from observations", dbRows105, "The generated tool should have a clear name, description, and reference the problem it solves. Should be actionable, not just a description.");
+    validatorCost += v105.cost;
+    record(105, v105.passed, v105.reason);
+  }
 
   // ═══════════════════════════════════════════════════════════
   // TEST #106: Cross-reference depth
@@ -184,8 +193,13 @@ Integration: Use correlation IDs from GlobalExceptionHandler for tracing.`
   // ═══════════════════════════════════════════════════════════
   console.log("\n=== Test #107: Completeness ===\n");
 
-  record(107, aspectsCovered >= 3,
-    `Completeness: ${aspectsCovered}/5 aspects covered (need >=3)`);
+  if (!(novelText.length > 200)) {
+    record(107, false, "Structural pre-check failed: retrieval text too short");
+  } else {
+    const v107 = await askValidator(107, "Retriever recalls generated tool when relevant", novelText, "When asked about the problem the tool solves, the Retriever should surface the generated tool with usage instructions");
+    validatorCost += v107.cost;
+    record(107, v107.passed, v107.reason);
+  }
 
   // Cost
   const logContent = readLog(orch.logFile);
@@ -194,6 +208,8 @@ Integration: Use correlation IDs from GlobalExceptionHandler for tracing.`
   console.log(`\n=== Cost Summary ===`);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
   console.log(`  API calls: ${apiCalls}`);
+
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   console.log(`\n--- Orchestrator Log (last 3000 chars) ---`);
   console.log(logContent.slice(-3000));

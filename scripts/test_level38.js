@@ -19,6 +19,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { askValidator } = require("./test_helpers.js");
 
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
@@ -68,6 +69,7 @@ function extractCost(log) { return (log.match(/cost: \$([0-9.]+)/g) || []).reduc
 
 async function run() {
   const SID = `level38-${Date.now()}`;
+  let validatorCost = 0;
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  AIDAM Level 38: Full Autonomous Loop ("Je suis AIDAM v2")`);
   console.log(`${"=".repeat(60)}`);
@@ -112,8 +114,13 @@ async function run() {
   console.log(`  Steps: ~${steps}, References capabilities: ${hasCapRefs}`);
 
   // Pass if we got useful context OR the Retriever already provided content in #170
-  record(171, (planText.length > 100 && (steps >= 2 || hasCapRefs)) || (planText.length === 0 && objText.length > 200),
-    `Plan: steps~${steps}, capabilities=${hasCapRefs}, length=${planText.length}`);
+  if (!((planText.length > 100 && (steps >= 2 || hasCapRefs)) || (planText.length === 0 && objText.length > 200))) {
+    record(171, false, "Structural pre-check failed");
+  } else {
+    const v171 = await askValidator(171, "Retriever returns technical knowledge that could help build a dashboard", planText.length > 100 ? planText : objText, "The retrieval should contain technical knowledge that could be useful for a dashboard project: deployment patterns, web development tools, HTML/JavaScript patterns, or any actionable development guidance. Any relevant technical content counts.");
+    validatorCost += v171.cost;
+    record(171, v171.passed, v171.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -222,8 +229,13 @@ async function run() {
   const learnerCalls = (logContent.match(/Learner:|Learner \(batch/g) || []).length;
   console.log(`  Retriever calls: ${retrieverCalls}, Learner calls: ${learnerCalls}`);
 
-  record(177, caps.length >= 2 || (retrieverCalls >= 2 && learnerCalls >= 3),
-    `Multi-capability: ${caps.length} types, retriever=${retrieverCalls}, learner=${learnerCalls}`);
+  if (!(caps.length >= 2 || (retrieverCalls >= 2 && learnerCalls >= 3))) {
+    record(177, false, "Structural pre-check failed");
+  } else {
+    const v177 = await askValidator(177, "Multi-capability usage — >=3 different capabilities used", { capabilities: caps, retrieverCalls, learnerCalls }, "Must demonstrate use of at least 3 different capability types (chart-lib, deploy, web-research, html-gen, error-fix). Evidence should come from DB entries or log activity.");
+    validatorCost += v177.cost;
+    record(177, v177.passed, v177.reason);
+  }
   await new Promise(r => setTimeout(r, 5000));
 
   // =============================================
@@ -244,8 +256,13 @@ async function run() {
   console.log(`  Dashboard entries: ${dashCheck.rows.length}`);
   dashCheck.rows.forEach(r => console.log(`    ${r.src}: ${r.name}`));
 
-  record(178, dashCheck.rows.length > 0,
-    `Experience saved: ${dashCheck.rows.length} dashboard entries`);
+  if (!(dashCheck.rows.length > 0)) {
+    record(178, false, "Structural pre-check failed");
+  } else {
+    const v178 = await askValidator(178, "Learning from the dashboard experience saved", dashCheck.rows, "Must save at least one learning or pattern about building monitoring dashboards. Should include specific technical details (Chart.js, static HTML, stats visualization).");
+    validatorCost += v178.cost;
+    record(178, v178.passed, v178.reason);
+  }
 
   // =============================================
   // BONUS: Compactor verification
@@ -273,6 +290,7 @@ async function run() {
   // Cleanup
   const totalCost = extractCost(logContent);
   console.log(`  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  Validator cost: $${validatorCost.toFixed(4)}`);
 
   await killSession(SID, orch.proc);
   // Clean up transcript
