@@ -946,7 +946,33 @@ Test ultime. Le systeme recoit un objectif de haut niveau, planifie, execute, **
 
 ---
 
-### PROGRESSION NARRATIVE (L1-L38)
+## NIVEAU 39 - "Je maintiens" (Curator Agent)
+**Script:** `scripts/test_level39.js` | **Tests:** #179-#184 | **AGI: 111/100 | Status: CREE**
+
+**Prerequis :** Curator agent (4e agent Haiku), integre dans l'orchestrator
+
+Le Curator est un agent de maintenance qui tourne periodiquement (ou on-demand). Il scanne la DB memoire et nettoie, fusionne, archive, et detecte les contradictions. Ce test verifie qu'il fait son travail correctement.
+
+| # | Test | Verification | Resultat |
+|---|------|-------------|----------|
+| 179 | Curator init | Le Curator s'initialise correctement (session ID dans les logs) | - |
+| 180 | Duplicate detection | Le Curator identifie des learnings quasi-identiques (>80% overlap semantique) | - |
+| 181 | Merge execution | Le Curator fusionne les doublons (l'entree survivante a les infos combinees, l'autre est marquee confidence=0 ou [MERGED]) | - |
+| 182 | Stale archival | Le Curator baisse la confidence des entrees non-retrouvees depuis 30+ jours (creees il y a 7+ jours) | - |
+| 183 | Contradiction detection | Le Curator detecte et flag des entrees contradictoires (ex: "OSIV should be on" vs "OSIV must be off") | - |
+| 184 | Curator report | Le Curator produit un rapport structure (merges, archives, contradictions, health score) | - |
+
+**Setup :** 8 learnings de test sont seedes :
+- 2 quasi-doublons (PG connection pooling)
+- 1 entry stale (45 jours, grunt)
+- 2 contradictions (Spring OSIV on vs off)
+- 3 lies (SQL injection, XSS, CSRF) pour consolidation potentielle
+
+**Teardown :** Toutes les entries de test sont supprimees apres le test.
+
+---
+
+### PROGRESSION NARRATIVE (L1-L39)
 
 ```
 L1-12:  "Je fonctionne"          — Infrastructure, les agents tournent
@@ -959,6 +985,7 @@ L34:    "Je resous partout"      — Multi-domaine : ML, K8s, React, Security + 
 L35:    "J'agis dans le monde"   — Deploiement reel avec recherche web + auto-verification
 L36-37: "Je partage"             — Meta-cognition, enseignement enrichi par le web
 L38:    "Je boucle"              — Autonomie complete : plan → research → act → verify → learn → retry
+L39:    "Je maintiens"           — Curator : merge, archive, contradictions, consolidation
 ```
 
 ---
@@ -1001,18 +1028,19 @@ L38:    "Je boucle"              — Autonomie complete : plan → research → 
 | 26 | Generative Solving | 4/4 | ALL PASS | ~$0.43 |
 | 27 | Multi-Project | 4/4 | ALL PASS | ~$0.62 |
 | 28 | Full Autonomous | 5/5 | ALL PASS | ~$1.78 |
-| 29 | Auto-Documentation | 0/4 | A CREER | - |
-| 30 | Browser Capability Acquisition (+ Web Research) | 0/6 | A CREER | - |
-| 31 | Claude Code Session Spawning (+ Web Docs) | 0/6 | A CREER | - |
-| 32 | Self-Testing | 0/4 | A CREER | - |
-| 33 | Autonomous Debugging (+ Web Fallback) | 0/6 | A CREER | - |
-| 34 | Multi-Domain Problem Solving (+ Cost Opt) | 0/8 | A CREER | - |
-| 35 | Autonomous Web Deployment (+ Web Research) | 0/8 | A CREER | - |
-| 36 | Self-Improvement (+ Web Solutions) | 0/5 | A CREER | - |
-| 37 | Teaching (+ Web Enrichment) | 0/6 | A CREER | - |
-| 38 | Full Autonomous Loop (+ Web Research) | 0/9 | A CREER | - |
+| 29 | Auto-Documentation | 0/4 | CREE | - |
+| 30 | Browser Capability Acquisition (+ Web Research) | 0/6 | CREE | - |
+| 31 | Claude Code Session Spawning (+ Web Docs) | 0/6 | CREE | - |
+| 32 | Self-Testing | 0/4 | CREE | - |
+| 33 | Autonomous Debugging (+ Web Fallback) | 0/6 | CREE | - |
+| 34 | Multi-Domain Problem Solving (+ Cost Opt) | 0/8 | CREE | - |
+| 35 | Autonomous Web Deployment (+ Web Research) | 0/8 | CREE | - |
+| 36 | Self-Improvement (+ Web Solutions) | 0/5 | CREE | - |
+| 37 | Teaching (+ Web Enrichment) | 0/6 | CREE | - |
+| 38 | Full Autonomous Loop (+ Web Research) | 0/9 | CREE | - |
+| 39 | Curator Agent | 0/6 | CREE | - |
 | **Total L0-L28** | | **116/116** | **ALL PASS** | **~$10.14** |
-| **Total L0-L38** | | **116/178** | | |
+| **Total L0-L39** | | **116/184** | | |
 
 ---
 
