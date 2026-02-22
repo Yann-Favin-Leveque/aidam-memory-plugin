@@ -1,6 +1,19 @@
 {
   "description": "AIDAM Memory - Cognitive memory with background orchestrator. Custom /commands via UserPromptSubmit router.",
   "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/on_pre_compact.sh\"",
+            "timeout": 10,
+            "statusMessage": "Preparing AIDAM for compaction..."
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|clear|compact|resume",

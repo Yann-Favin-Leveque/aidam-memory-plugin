@@ -53,8 +53,8 @@ DB_CONFIG = {
     'password': os.environ.get('PGPASSWORD', '')
 }
 
-# additionalContext limit is 10000 chars in Claude Code
-MAX_CONTEXT_CHARS = 9500
+# additionalContext limit is 40000 chars in Claude Code (silently dropped above)
+MAX_CONTEXT_CHARS = 38000
 
 
 def find_previous_session_id(conn, new_session_id):
@@ -169,6 +169,10 @@ def main():
                 with open(raw_tail_path, 'r', encoding='utf-8') as f:
                     raw_tail = f.read()
                 if raw_tail:
+                    # Filter out [TOOLS] lines to maximize user/claude content
+                    lines = raw_tail.split('\n')
+                    lines = [l for l in lines if not l.startswith('[TOOLS]')]
+                    raw_tail = '\n'.join(lines)
                     # Truncate from the beginning to keep the most recent
                     if len(raw_tail) > remaining:
                         raw_tail = "...(truncated)...\n\n" + raw_tail[-remaining:]

@@ -1278,13 +1278,20 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
     const estimatedTokens = Math.floor(fileSize / 6);
     const tokensSinceLastCompact = estimatedTokens - this.lastCompactedSize;
 
-    if (tokensSinceLastCompact < this.config.compactorTokenThreshold) return;
+    // Sliding trigger: every 40k new tokens
+    const slidingTrigger = tokensSinceLastCompact >= this.config.compactorTokenThreshold;
 
-    log(`Compactor triggered: ~${estimatedTokens} tokens total, ~${tokensSinceLastCompact} since last compact`);
-    await this.runCompactor(transcriptPath, estimatedTokens);
+    // Fixed trigger: at 180k total tokens, force compact if last compact is 10k+ tokens stale.
+    // Safety net so the session state is fresh before a likely /clear at ~195k.
+    const fixedTrigger = estimatedTokens >= 180000 && tokensSinceLastCompact >= 10000;
+
+    if (!slidingTrigger && !fixedTrigger) return;
+
+    log(`Compactor triggered (${fixedTrigger ? 'fixed@180k' : 'sliding'}): ~${estimatedTokens} tokens total, ~${tokensSinceLastCompact} since last compact`);
+    await this.runCompactor(transcriptPath, estimatedTokens, tokensSinceLastCompact);
   }
 
-  private async runCompactor(transcriptPath: string, currentTokenEstimate: number): Promise<void> {
+  private async runCompactor(transcriptPath: string, currentTokenEstimate: number, tokensSinceLastCompact: number = 40000): Promise<void> {
     if (!this.compactorSessionId) return;
     this.compactorBusy = true;
 
@@ -1362,9 +1369,12 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
       this.compactorVersion = previousVersion + 1;
 
       // 3. Take the LAST N chars of conversation chunks (sliding window)
-      //    First compact of session (no previous state) → 45k chars (~11k tokens)
-      //    Subsequent compacts (has previous state) → 25k chars (~6k tokens)
-      const maxChars = previousVersion === 0 ? 45000 : 25000;
+      //    Window = tokensSinceLastCompact + margin, converted to chars (~4 chars/token).
+      //    First compact: +35k margin (covers injected state post-/clear).
+      //    Subsequent: +5k margin.
+      const marginTokens = previousVersion === 0 ? 35000 : 5000;
+      const windowTokens = tokensSinceLastCompact + marginTokens;
+      const maxChars = windowTokens * 4;
 
       const conversationChunks: string[] = [];
       let charsCollected = 0;
@@ -1787,7 +1797,7 @@ async function main(): Promise<void> {
     pollIntervalMs: 2000,
     heartbeatIntervalMs: 30000,
     compactorCheckIntervalMs: 30000,        // Check every 30s
-    compactorTokenThreshold: 20000,          // Compact every ~20k new tokens
+    compactorTokenThreshold: 40000,          // Compact every ~40k new tokens
     retrieverModel: "claude-haiku-4-5-20251001",
     learnerModel: "claude-haiku-4-5-20251001",
     compactorModel: "claude-haiku-4-5-20251001",
