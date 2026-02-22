@@ -74,6 +74,8 @@ The `UserPromptSubmit` hook routes `/commands` to scripts in `scripts/commands/`
 
 **Add new commands:** create `scripts/commands/<name>.py` (or `.sh`, `.js`) — it becomes `/name` automatically.
 
+Commands also have matching skills in `skills/` for autocomplete support. The skill simply passes the `/command` through to the hook router.
+
 ### `/clear` — Smart Session Clear
 
 `/clear` works natively with the plugin. The orchestrator **persists across /clear** (same PID, no agent re-initialization):
@@ -310,7 +312,9 @@ for i in $(seq 13 39); do node scripts/test_level$i.js; done
 
 ```
 aidam-memory-plugin/
-├── hooks/hooks.json                     # 3 hooks: SessionStart, SessionEnd, UserPromptSubmit
+├── hooks/hooks.json                     # 4 hooks: SessionStart, SessionEnd, PreCompact, UserPromptSubmit
+├── skills/
+│   └── aidam-usage/SKILL.md             # Skill for autocomplete → routes to hook
 ├── scripts/
 │   ├── orchestrator.ts/.js              # Core: manages 5 agent sessions, persists across /clear
 │   ├── on_session_start.sh              # Launches orchestrator + injects state on /clear
