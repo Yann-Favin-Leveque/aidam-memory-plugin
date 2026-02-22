@@ -117,28 +117,7 @@ memory_save_pattern({
 })
 ```
 
-### Step 5: Optional - Create Generated Tools
-
-If you observe the user repeatedly performing a multi-step bash workflow (3+ steps, done at least conceptually twice):
-
-1. Write a bash script using the Bash tool:
-   ```bash
-   cat > ~/.claude/generated_tools/tool_name.sh << 'SCRIPT'
-   #!/bin/bash
-   # Description: what this tool does
-   # Usage: tool_name.sh <arg1> [arg2]
-   ...script content...
-   SCRIPT
-   chmod +x ~/.claude/generated_tools/tool_name.sh
-   ```
-
-2. Register in DB:
-   ```sql
-   INSERT INTO generated_tools (name, description, file_path, language, tags)
-   VALUES ('tool_name', 'What it does', '~/.claude/generated_tools/tool_name.sh', 'bash', '["tag1"]');
-   ```
-
-The Retriever will surface these tools to the main session when relevant.
+**Note:** Generated tools (reusable scripts) are created explicitly by the main session via `aidam_create_tool`. You do NOT create generated tools — focus on learnings, errors, patterns, and personal knowledge only.
 
 ### Step 4b: Index the Knowledge (AUTOMATIC after every save)
 

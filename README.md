@@ -58,8 +58,8 @@ Results are merged and returned as a single response. If drill-down details are 
 | `aidam_retrieve(context)` | Explicit | Search memory for relevant knowledge (both retrievers in parallel) |
 | `aidam_deepen(items)` | Explicit | Get detailed drill-down for items flagged by retrieve |
 | `aidam_learn(context)` | Explicit | Send observations to Learner for async knowledge extraction |
-| `aidam_list_tools()` | Read | List generated tools (scripts learned by the Learner) |
-| `aidam_use_tool(name, args)` | Execute | Run a generated tool by name |
+| `aidam_create_tool(name, desc, path, lang, tags)` | Write | Register a generated tool script + index for retrieval |
+| `aidam_use_tool(name, args)` | Execute | Run a generated tool by name (discover via aidam_retrieve) |
 | `aidam_smart_compact(force_summary)` | Control | Check compaction status or force a new compaction |
 | `aidam_usage()` | Read | Per-agent cost breakdown for current session |
 

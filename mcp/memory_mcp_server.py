@@ -215,7 +215,7 @@ WRITE_TOOLS = {
     "memory_log_session", "memory_add_project", "memory_drilldown_save",
     "memory_index_upsert",
     "db.execute_migration_scoped", "db_execute",
-    "aidam_use_tool", "aidam_retrieve", "aidam_learn", "aidam_smart_compact"
+    "aidam_use_tool", "aidam_retrieve", "aidam_learn", "aidam_smart_compact", "aidam_create_tool"
 }
 
 
@@ -760,16 +760,9 @@ async def list_tools() -> list[Tool]:
         # AIDAM ORCHESTRATOR TOOLS
         # ============================================
         Tool(
-            name="aidam_list_tools",
-            description="List active generated tools (scripts learned by the Learner agent). Shows name, description, language, tags, usage count.",
-            inputSchema={
-                "type": "object",
-                "properties": _with_pagination({})
-            }
-        ),
-        Tool(
             name="aidam_use_tool",
-            description="Execute a generated tool (script) by name. Scripts are stored in ~/.claude/generated_tools/.",
+            description="Execute a generated tool (script) by name. Scripts are stored in ~/.claude/generated_tools/. "
+                        "To discover available tools, use aidam_retrieve — it searches generated tools alongside learnings/patterns.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -862,6 +855,41 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["items"]
+            }
+        ),
+        Tool(
+            name="aidam_create_tool",
+            description="Register a generated tool (script) in the database and index it for retrieval. "
+                        "The script file must already exist at the given path under ~/.claude/generated_tools/. "
+                        "After registration, the tool is discoverable via aidam_retrieve and executable via aidam_use_tool.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Unique tool name (lowercase, hyphens ok, e.g. 'maven-compile-trade-bot')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What the tool does (1-2 sentences)"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the script file (relative to ~/.claude/generated_tools/ or absolute)"
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["bash", "python", "javascript"],
+                        "description": "Script language (default: bash)",
+                        "default": "bash"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Searchable tags (e.g. ['maven', 'spring-boot', 'trade-bot'])"
+                    }
+                },
+                "required": ["name", "description", "file_path"]
             }
         ),
         # ============================================
@@ -1188,13 +1216,6 @@ async def handle_tool(name: str, args: dict) -> str:
     # ============================================
     # AIDAM ORCHESTRATOR HANDLERS
     # ============================================
-    elif name == "aidam_list_tools":
-        rows = mem.select_query(
-            "SELECT name, description, file_path, language, tags, usage_count, is_active "
-            "FROM generated_tools WHERE is_active = TRUE ORDER BY name"
-        )
-        return format_result({"tools": rows, "count": len(rows)}, max_chars, offset, filter_text)
-
     elif name == "aidam_use_tool":
         tool_name = args["name"]
         tool_args = args.get("args", "")
@@ -1364,6 +1385,58 @@ async def handle_tool(name: str, args: dict) -> str:
         )
 
         return format_result({"status": "queued", "message": "Learning context sent to Learner agent for processing."})
+
+    elif name == "aidam_create_tool":
+        tool_name = args["name"]
+        description = args["description"]
+        file_path = args["file_path"]
+        language = args.get("language", "bash")
+        tags = args.get("tags", [])
+
+        # Resolve path: relative paths are under ~/.claude/generated_tools/
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(os.path.expanduser("~/.claude/generated_tools"), file_path)
+
+        # Security: only allow scripts under ~/.claude/generated_tools/
+        allowed_dir = os.path.realpath(os.path.expanduser("~/.claude/generated_tools"))
+        real_path = os.path.realpath(file_path)
+        if not real_path.startswith(allowed_dir):
+            return format_result({"error": f"Security: script must be under {allowed_dir}"})
+
+        if not os.path.exists(real_path):
+            return format_result({"error": f"Script file not found: {file_path}. Write the script first, then register it."})
+
+        # Store relative path in DB for portability
+        rel_path = os.path.relpath(real_path, os.path.expanduser("~/.claude/generated_tools"))
+
+        # INSERT into generated_tools (upsert on name)
+        new_id = mem.execute_insert(
+            "INSERT INTO generated_tools (name, description, file_path, language, tags) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (name) DO UPDATE SET description=EXCLUDED.description, "
+            "file_path=EXCLUDED.file_path, language=EXCLUDED.language, tags=EXCLUDED.tags, "
+            "updated_at=CURRENT_TIMESTAMP, is_active=TRUE",
+            (tool_name, description, rel_path, language,
+             json.dumps(tags) if tags else None)
+        )
+
+        # Index in knowledge_index for retrieval
+        mem.upsert_knowledge_index(
+            source_table='generated_tools',
+            source_id=new_id,
+            domain='generated-tools',
+            title=tool_name,
+            summary=description,
+            tags=tags
+        )
+
+        return format_result({
+            "status": "created",
+            "id": new_id,
+            "name": tool_name,
+            "file_path": rel_path,
+            "message": f"Tool '{tool_name}' registered and indexed. Use aidam_use_tool(name='{tool_name}') to execute."
+        })
 
     elif name == "aidam_smart_compact":
         force_summary = args.get("force_summary", False)

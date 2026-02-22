@@ -3,39 +3,48 @@ You have a cognitive memory system running in background. Here's how it works:
 
 ARCHITECTURE:
 - Orchestrator: Node.js process managing 5 background agents via Claude Agent SDK
-- Retriever A (knowledge): searches learnings/patterns/errors in PostgreSQL (claude_memory DB)
+- Retriever A (knowledge): searches learnings/patterns/errors/generated_tools in PostgreSQL (claude_memory DB)
 - Retriever B (project): searches project context, sessions, drill-down details
 - Learner: extracts reusable knowledge from observations, saves to DB
 - Compactor: monitors transcript size, produces session_state summaries for /clear continuity
 - Curator: (off by default) consolidates and deduplicates old learnings
 
 MCP TOOLS (call these explicitly when useful):
-- aidam_retrieve(context): search memory for relevant knowledge. Returns merged results from both retrievers. If some results have drill-downs available, a "deepenable" list is included in the response.
-- aidam_deepen(items): get detailed knowledge (code snippets, file paths, implementation details) for specific items flagged by aidam_retrieve. Only call this when aidam_retrieve returned deepenable items AND you actually need the details. Most of the time aidam_retrieve alone is sufficient.
+- aidam_retrieve(context): search memory for relevant knowledge — learnings, patterns, errors, AND generated tools. Returns merged results from both retrievers. This is your single entry point to discover everything you know.
+- aidam_deepen(items): get detailed knowledge (code snippets, file paths, implementation details) for specific items flagged by aidam_retrieve.
 - aidam_learn(context): send observations to the Learner for async knowledge extraction.
-- aidam_list_tools(): list generated tools (scripts learned by the Learner)
-- aidam_use_tool(name, args): execute a generated tool by name
-- aidam_smart_compact(force_summary): check compaction status or force a new compaction
-- aidam_usage(): usage and cost report for the current session
+- aidam_create_tool(name, description, file_path, language, tags): register a generated tool script in DB + index it for retrieval.
+- aidam_use_tool(name, args): execute a generated tool by name.
+- aidam_smart_compact(force_summary): check compaction status or force a new compaction.
+- aidam_usage(): usage and cost report for the current session.
 
 RETRIEVAL PATTERN (2 levels):
 1. aidam_retrieve → surface results + "deepenable" hints. This is enough most of the time.
-2. aidam_deepen → ONLY if you need code snippets, file paths, or detailed implementation for a specific item. Don't call this systematically — only when the surface result is insufficient for the task at hand.
+2. aidam_deepen → ONLY if you need code snippets, file paths, or detailed implementation for a specific item.
 
 WHEN TO RETRIEVE:
 - Starting a new task (check for relevant past knowledge)
 - Encountering an error (check if it was solved before)
 - Working on a project (get project context)
-- Not sure how to approach something (check for patterns)
+- Not sure how to approach something (check for patterns AND tools)
+- Before doing something complex: "do I already have a tool for this?"
 
 WHEN TO LEARN:
 - After solving a non-trivial bug
 - After discovering a reusable pattern or workaround
 - After making an architectural decision worth remembering
 
+GENERATED TOOLS (reusable scripts):
+When you develop a reusable script or multi-step workflow:
+1. Write the script to ~/.claude/generated_tools/<name>.sh (or .py, .js)
+2. Call aidam_create_tool(name, description, file_path, language, tags) to register + index it
+3. Next time, aidam_retrieve will surface the tool when relevant (you don't need a separate list command)
+4. Execute with aidam_use_tool(name, args)
+Storage: ALL generated tool scripts go in ~/.claude/generated_tools/
+
 HOOKS:
 - SessionStart -> launches orchestrator + agents
 - SessionEnd -> graceful shutdown, final state save
 - /clear -> session state preserved and re-injected (orchestrator stays alive)
 
-DB: cognitive_inbox, retrieval_inbox, orchestrator_state, session_state, agent_usage, learnings, patterns, errors, projects
+DB: cognitive_inbox, retrieval_inbox, orchestrator_state, session_state, agent_usage, learnings, patterns, errors, projects, generated_tools
