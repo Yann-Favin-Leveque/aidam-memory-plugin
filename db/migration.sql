@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS orchestrator_state (
     id SERIAL PRIMARY KEY,
     session_id TEXT NOT NULL UNIQUE,
     pid INTEGER,
+    parent_pid INTEGER DEFAULT 0,
     retriever_session_id TEXT,
     learner_session_id TEXT,
     status TEXT DEFAULT 'starting',     -- 'starting', 'running', 'stopping', 'stopped', 'crashed'

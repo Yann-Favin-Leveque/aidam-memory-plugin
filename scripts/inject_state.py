@@ -13,10 +13,37 @@ Finding the previous session:
 import sys
 import json
 import os
+import time
+import logging
+
+# Load .env from plugin root if env vars are missing
+def _load_env():
+    env_file = os.path.join(os.path.dirname(__file__), '..', '.env')
+    if os.path.isfile(env_file):
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, _, val = line.partition('=')
+                    os.environ.setdefault(key.strip(), val.strip())
+
+if not os.environ.get('PGPASSWORD'):
+    _load_env()
+
+# Setup logging
+LOG_DIR = os.path.expanduser("~/.claude/logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, "aidam_inject.log")
+logging.basicConfig(
+    filename=LOG_PATH, level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s'
+)
+logger = logging.getLogger("inject_state")
 
 try:
     import psycopg2
 except ImportError:
+    logger.error("psycopg2 not installed")
     sys.exit(0)
 
 DB_CONFIG = {
@@ -39,10 +66,10 @@ def find_previous_session_id(conn, new_session_id):
     """
     cur = conn.cursor()
 
-    # Find the most recent cleared session (exclude the new session itself)
+    # Find the most recent cleared/clearing session (exclude the new session itself)
     cur.execute("""
         SELECT session_id FROM orchestrator_state
-        WHERE status = 'cleared' AND session_id != %s
+        WHERE status IN ('cleared', 'clearing') AND session_id != %s
         ORDER BY started_at DESC
         LIMIT 1
     """, (new_session_id,))
@@ -53,9 +80,10 @@ def find_previous_session_id(conn, new_session_id):
         # Mark as consumed so another parallel /clear doesn't pick it up
         cur.execute("""
             UPDATE orchestrator_state SET status = 'injected'
-            WHERE session_id = %s AND status = 'cleared'
+            WHERE session_id = %s AND status IN ('cleared', 'clearing')
         """, (previous_session_id,))
         conn.commit()
+        logger.info(f"Found previous session: {previous_session_id}")
         return previous_session_id
 
     return None
@@ -76,21 +104,35 @@ def find_previous_session_id_legacy():
         return None
 
 
+def find_with_retry(conn, new_session_id, retries=3, delay=0.5):
+    """Retry finding the previous session to handle race conditions."""
+    for attempt in range(retries):
+        prev = find_previous_session_id(conn, new_session_id)
+        if prev:
+            return prev
+        if attempt < retries - 1:
+            logger.info(f"No cleared/clearing session found, retry {attempt+1}/{retries}")
+            time.sleep(delay)
+    return find_previous_session_id_legacy()
+
+
 def main():
     source = sys.argv[1] if len(sys.argv) > 1 else "clear"
     new_session_id = sys.argv[2] if len(sys.argv) > 2 else ""
+    logger.info(f"inject_state called: source={source}, new_session_id={new_session_id}")
 
     try:
         conn = psycopg2.connect(**DB_CONFIG)
 
-        # Try DB-based lookup first (parallel-safe), fallback to legacy marker
+        # Try DB-based lookup with retries (parallel-safe), fallback to legacy marker
         previous_session_id = None
         if new_session_id:
-            previous_session_id = find_previous_session_id(conn, new_session_id)
+            previous_session_id = find_with_retry(conn, new_session_id)
         if not previous_session_id:
             previous_session_id = find_previous_session_id_legacy()
 
         if not previous_session_id:
+            logger.info("No previous session found")
             conn.close()
             sys.exit(0)
 
@@ -108,6 +150,7 @@ def main():
         conn.close()
 
         if not row:
+            logger.info(f"No session_state found for {previous_session_id}")
             sys.exit(0)
 
         state_text, raw_tail_path, version = row
@@ -146,9 +189,12 @@ def main():
                 "additionalContext": f"[AIDAM Memory: context restored from previous session (v{version})]\n\n{context}"
             }
         }
-        print(json.dumps(output))
+        output_json = json.dumps(output)
+        logger.info(f"Outputting JSON: {len(output_json)} chars, context_len={len(context)}")
+        print(output_json)
 
-    except Exception:
+    except Exception as e:
+        logger.error(f"inject_state failed: {e}", exc_info=True)
         sys.exit(0)
 
 

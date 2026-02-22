@@ -1,25 +1,26 @@
 # AIDAM Memory Plugin
 
-Cognitive memory system for Claude Code. Five persistent background agents (2 Retrievers, Learner, Compactor, Curator) automatically search, save, compact, and maintain knowledge, injecting relevant context into your main Claude Code session.
+Cognitive memory system for Claude Code. Five persistent background agents (2 Retrievers, Learner, Compactor, Curator) search, save, compact, and maintain knowledge in a PostgreSQL database. The main Claude session calls MCP tools explicitly to retrieve and learn, while the Compactor runs automatically in the background.
 
 ## Architecture
 
 ```
 Main Session (user)
-  ├── SessionStart hook → launches orchestrator
-  ├── UserPromptSubmit hook → polls retrieval_inbox → merges + injects context
-  ├── PostToolUse hook (async) → pushes to cognitive_inbox
-  └── SessionEnd hook → stops orchestrator
+  ├── SessionStart hook → launches orchestrator + injects previous session state
+  ├── UserPromptSubmit hook → command router (custom /commands → scripts)
+  ├── SessionEnd hook → graceful shutdown or /clear preservation
+  └── MCP tools → aidam_retrieve, aidam_learn, aidam_deepen, aidam_usage, ...
 
-Orchestrator (Node.js, Agent SDK)
+Orchestrator (Node.js, Agent SDK) — persists across /clear
   ├── Retriever A — Keyword (persistent)  → FTS/fuzzy search across all tables
   ├── Retriever B — Cascade (persistent)  → knowledge_index → domain → drill down
-  ├── Learner (persistent)                → extracts knowledge → saves to memory DB + knowledge_index
+  ├── Learner (persistent)                → extracts knowledge → saves to DB + knowledge_index
   ├── Compactor (persistent)              → monitors transcript size → writes session summaries
   └── Curator (scheduled)                 → merges duplicates, archives stale, detects contradictions
 
 Memory DB (PostgreSQL)
   ├── learnings, patterns, errors_solutions, tools  (knowledge tables)
+  ├── knowledge_details                              (drill-down details for 2-level retrieval)
   ├── knowledge_index                                (domain summary for cascade retrieval)
   ├── cognitive_inbox → retrieval_inbox              (queue tables)
   ├── session_state                                  (compactor output)
@@ -30,20 +31,57 @@ Memory DB (PostgreSQL)
 
 | Agent | Role | Model | Trigger |
 |-------|------|-------|---------|
-| **Retriever A (Keyword)** | Broad FTS/fuzzy search across all memory tables with parallel tool calls | Haiku | Every user prompt |
-| **Retriever B (Cascade)** | Searches knowledge_index summary first, identifies relevant domains, then drills down | Haiku | Every user prompt |
-| **Learner** | Extracts knowledge from tool observations (batch mode) + indexes in knowledge_index | Haiku | Tool use events |
+| **Retriever A (Keyword)** | Broad FTS/fuzzy search across all memory tables with parallel tool calls | Haiku | `aidam_retrieve` MCP call |
+| **Retriever B (Cascade)** | Searches knowledge_index summary first, identifies relevant domains, then drills down | Haiku | `aidam_retrieve` MCP call |
+| **Learner** | Extracts knowledge from observations + indexes in knowledge_index | Haiku | `aidam_learn` MCP call |
 | **Compactor** | Summarizes conversation into structured state for `/clear` re-injection | Haiku | Transcript size threshold (~20k tokens) |
-| **Curator** | DB maintenance: merge duplicates (>80% overlap), archive stale entries, detect contradictions | Haiku | Scheduled interval (default: 6h) or on-demand |
+| **Curator** | DB maintenance: merge duplicates, archive stale, detect contradictions | Haiku | Scheduled interval (default: 6h) or on-demand |
 
 ### Dual Retriever Architecture
 
-Both retrievers run **in parallel** on every user prompt, using different strategies:
+Both retrievers run **in parallel** when `aidam_retrieve` is called, using different strategies:
 
 - **Retriever A (Keyword)**: Direct FTS + fuzzy search across learnings, patterns, errors, tools. Uses parallel tool calls (3-5 searches in a single turn).
 - **Retriever B (Cascade)**: Starts with `knowledge_index` (domain summary table), identifies relevant knowledge domains, then drills down into specific entries.
 
-Results are **injected as they arrive** (no waiting for both). When one retriever injects, the other receives a `[PEER_INJECTED]` notification to avoid duplicating content. The hook merges multiple results before injecting into the main session.
+Results are merged and returned as a single response. If drill-down details are available, a `deepenable` list is included — the caller can then use `aidam_deepen` to get code snippets, file paths, and implementation details.
+
+### 2-Level Retrieval
+
+1. **`aidam_retrieve(context)`** → surface results + `deepenable` hints. Sufficient most of the time.
+2. **`aidam_deepen(items)`** → detailed knowledge (code snippets, file paths) for specific items. Only when surface results aren't enough.
+
+### MCP Tools
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `aidam_retrieve(context)` | Explicit | Search memory for relevant knowledge (both retrievers in parallel) |
+| `aidam_deepen(items)` | Explicit | Get detailed drill-down for items flagged by retrieve |
+| `aidam_learn(context)` | Explicit | Send observations to Learner for async knowledge extraction |
+| `aidam_list_tools()` | Read | List generated tools (scripts learned by the Learner) |
+| `aidam_use_tool(name, args)` | Execute | Run a generated tool by name |
+| `aidam_smart_compact(force_summary)` | Control | Check compaction status or force a new compaction |
+| `aidam_usage()` | Read | Per-agent cost breakdown for current session |
+
+### Custom User Commands
+
+The `UserPromptSubmit` hook routes `/commands` to scripts in `scripts/commands/` — **zero LLM tokens**:
+
+| Command | Script | Description |
+|---------|--------|-------------|
+| `/aidam-usage` | `scripts/commands/aidam-usage.py` | Usage and cost report |
+
+**Add new commands:** create `scripts/commands/<name>.py` (or `.sh`, `.js`) — it becomes `/name` automatically.
+
+### `/clear` — Smart Session Clear
+
+`/clear` works natively with the plugin. The orchestrator **persists across /clear** (same PID, no agent re-initialization):
+
+1. `SessionEnd` hook marks state as `clearing`, runs emergency compact if needed
+2. `SessionStart` hook finds the old session, injects saved state, sends `session_reset` to orchestrator
+3. Orchestrator swaps session_id, resets volatile state, keeps agent sessions alive
+
+No need for `/smart-compact` — just use `/clear`.
 
 ## Prerequisites
 
@@ -53,7 +91,7 @@ Results are **injected as they arrive** (no waiting for both). When one retrieve
 |------|---------|---------|
 | **Claude Code** | Latest | The CLI this plugin extends (`claude`) |
 | **Node.js** | >= 18 | Orchestrator runtime |
-| **Python** | >= 3.10 | Hook scripts (on_prompt_submit, on_tool_use) |
+| **Python** | >= 3.10 | Hook scripts, MCP server, command scripts |
 | **PostgreSQL** | >= 15 | Memory storage backend (with pg_trgm extension) |
 | **npm** | >= 9 | Package management |
 | **psql** | (bundled with PG) | Database migrations |
@@ -70,18 +108,8 @@ Results are **injected as they arrive** (no waiting for both). When one retrieve
 ### Required Python packages
 
 ```bash
-pip install psycopg2-binary
+pip install psycopg2-binary mcp
 ```
-
-### MCP Memory Server (included in this repo)
-
-The orchestrator launches an MCP server to give agents access to memory tools. All files are in `mcp/`:
-
-| File | Purpose |
-|------|---------|
-| `mcp/memory_mcp_server.py` | MCP server exposing memory as tools to agents |
-| `mcp/memory_pg.py` | Core memory library (weighted FTS + pg_trgm fuzzy search) |
-| `mcp/schema.sql` | Main memory tables + search functions (smart_search, fuzzy_search) |
 
 ### Database setup
 
@@ -92,6 +120,7 @@ The plugin requires a PostgreSQL database called `claude_memory` with:
 3. **Weighted search triggers** — created by `db/migration_v2_weighted_search.sql`
 4. **Fuzzy search indexes** (pg_trgm) — created by `db/migration_v3_trigram.sql`
 5. **Knowledge index** (domain summary for cascade retrieval) — created by `db/migration_v4_knowledge_index.sql`
+6. **Usage tracking** — created by `db/migration_v5_usage_tracking.sql`
 
 ## Installation
 
@@ -111,7 +140,7 @@ npm install
 npx tsc
 
 # 5. Install Python dependencies
-pip install psycopg2-binary
+pip install psycopg2-binary mcp
 
 # 6. Create the database (if not exists)
 source .env
@@ -128,6 +157,8 @@ PGPASSWORD=$PGPASSWORD psql -U postgres -h localhost -d claude_memory \
   -f db/migration_v3_trigram.sql
 PGPASSWORD=$PGPASSWORD psql -U postgres -h localhost -d claude_memory \
   -f db/migration_v4_knowledge_index.sql
+PGPASSWORD=$PGPASSWORD psql -U postgres -h localhost -d claude_memory \
+  -f db/migration_v5_usage_tracking.sql
 
 # 8. Create generated tools directory
 mkdir -p ~/.claude/generated_tools
@@ -162,7 +193,7 @@ Toggle features and configure budgets in `~/.claude/settings.json`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIDAM_MEMORY_RETRIEVER` | `on` | Enable/disable the Retriever agent |
+| `AIDAM_MEMORY_RETRIEVER` | `on` | Enable/disable the Retriever agents |
 | `AIDAM_MEMORY_LEARNER` | `on` | Enable/disable the Learner agent |
 | `AIDAM_MEMORY_COMPACTOR` | `on` | Enable/disable the Compactor agent |
 | `AIDAM_MEMORY_CURATOR` | `off` | Enable/disable the Curator agent |
@@ -202,18 +233,6 @@ The Compactor uses a dynamic sliding window over conversation content:
 |-----------|------------|-----------|
 | First compact of session (no previous state) | **45k chars** (~11k tokens) | Needs more context to build initial state |
 | Subsequent compacts (updating existing state) | **25k chars** (~6k tokens) | Only needs recent delta since last state |
-
-### `/smart-compact` — Safe Session Clear
-
-Custom slash command (defined in `.claude-plugin/skills/smart-compact/`) that replaces `/clear`:
-
-| Command | Behavior |
-|---------|----------|
-| `/smart-compact` | Checks orchestrator is running, verifies existing state, then clears + re-injects |
-| `/smart-compact -forcesummary` | Forces Compactor to run first (captures latest conversation), then clears + re-injects |
-| `/clear` | Native clear — works with AIDAM if plugin is loaded, but no safety checks |
-
-Use `/smart-compact` by default to prevent accidental context loss when the plugin isn't loaded.
 
 ## Search
 
@@ -290,18 +309,18 @@ for i in $(seq 13 39); do node scripts/test_level$i.js; done
 
 ```
 aidam-memory-plugin/
-├── .claude-plugin/
-│   ├── plugin.json                      # Plugin manifest
-│   └── skills/smart-compact/SKILL.md    # /smart-compact slash command
-├── .env.example                         # Environment variables template
-├── hooks/hooks.json                     # 4 lifecycle hooks
+├── hooks/hooks.json                     # 3 hooks: SessionStart, SessionEnd, UserPromptSubmit
 ├── scripts/
-│   ├── orchestrator.ts/.js              # Core: manages 4 agent sessions
-│   ├── on_session_start.sh              # Launches orchestrator (passes budgets, curator config)
-│   ├── on_prompt_submit.py              # Polls retrieval results, injects context
-│   ├── on_tool_use.py                   # Pushes tool data to Learner (async)
-│   ├── on_session_end.sh                # Stops orchestrator
+│   ├── orchestrator.ts/.js              # Core: manages 5 agent sessions, persists across /clear
+│   ├── on_session_start.sh              # Launches orchestrator + injects state on /clear
+│   ├── on_session_end.sh                # Graceful shutdown or /clear preservation
 │   ├── inject_state.py                  # Injects compactor state on /clear
+│   ├── emergency_compact.py             # Zero-API-cost fallback compaction
+│   ├── command_router.py                # UserPromptSubmit hook: routes /commands to scripts
+│   ├── commands/
+│   │   └── aidam-usage.py               # /aidam-usage command (zero LLM tokens)
+│   ├── on_prompt_submit.py              # (legacy, kept as reference)
+│   ├── on_tool_use.py                   # (legacy, kept as reference)
 │   └── test_level{1-39}.js             # Test suite (184 tests)
 ├── prompts/
 │   ├── retriever_keyword_system.md      # Retriever A (Keyword) agent instructions
@@ -310,14 +329,16 @@ aidam-memory-plugin/
 │   ├── compactor_system.md              # Compactor agent instructions
 │   └── curator_system.md               # Curator agent instructions
 ├── mcp/
-│   ├── memory_mcp_server.py             # MCP server (launched by orchestrator)
+│   ├── memory_mcp_server.py             # MCP server (memory tools for agents + AIDAM tools)
 │   ├── memory_pg.py                     # Core memory library (weighted FTS + fuzzy)
+│   ├── session_controller.py            # MCP server for spawning/controlling Claude sessions
 │   └── schema.sql                       # Main DB schema + search functions
 ├── db/
 │   ├── migration.sql                    # Queue tables + cleanup functions
 │   ├── migration_v2_weighted_search.sql # Weighted tsvector triggers
 │   ├── migration_v3_trigram.sql         # pg_trgm fuzzy search indexes
-│   └── migration_v4_knowledge_index.sql # Knowledge index for cascade retrieval
+│   ├── migration_v4_knowledge_index.sql # Knowledge index for cascade retrieval
+│   └── migration_v5_usage_tracking.sql  # Agent usage tracking
 ├── config/defaults.json                 # Default configuration (agents, budgets, batch)
 ├── tools/cleanup_memory.sh              # Manual cleanup script
 ├── TEST_PLAN.md                         # Full test plan (184 tests, levels 0-39)

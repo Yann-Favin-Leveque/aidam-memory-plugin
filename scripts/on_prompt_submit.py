@@ -10,6 +10,20 @@ import hashlib
 import time
 import os
 
+# Load .env from plugin root if env vars are missing
+def _load_env():
+    env_file = os.path.join(os.path.dirname(__file__), '..', '.env')
+    if os.path.isfile(env_file):
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, _, val = line.partition('=')
+                    os.environ.setdefault(key.strip(), val.strip())
+
+if not os.environ.get('PGPASSWORD'):
+    _load_env()
+
 try:
     import psycopg2
 except ImportError:

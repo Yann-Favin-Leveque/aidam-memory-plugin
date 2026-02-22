@@ -1,6 +1,16 @@
 #!/bin/bash
 # AIDAM Memory - SessionEnd Hook
-# Signals the orchestrator to shut down gracefully.
+# On /clear: marks orchestrator as 'clearing' (orchestrator stays alive for session_reset)
+# On normal end: signals orchestrator to shut down gracefully.
+
+# Load .env from plugin root (provides PGPASSWORD and other config)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
 
 PYTHON="C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe"
 INPUT=$(cat)
@@ -35,30 +45,40 @@ PID_FILE="${PLUGIN_ROOT}/.orchestrator_${SESSION_ID}.pid"
 export PGPASSWORD="${PGPASSWORD:-}"
 PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
 
-# If reason is "clear" -> save marker in DB so SessionStart can find the previous state
 if [ "$REASON" = "clear" ]; then
-  # Store the cleared session_id in orchestrator_state (parallel-safe, scoped by session_id)
-  "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
-    "UPDATE orchestrator_state SET status='cleared' WHERE session_id='${SESSION_ID}' AND status IN ('running','stopping');" \
-    2>/dev/null || true
+  # ── /clear path: mark as 'clearing', keep orchestrator alive ──
+  # The orchestrator will receive a session_reset message from SessionStart
+  # and swap to the new session_id.
+  ROWS_UPDATED=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+    "UPDATE orchestrator_state SET status='clearing' WHERE session_id='${SESSION_ID}' AND status IN ('running','stopping','starting') RETURNING 1;" \
+    2>/dev/null | wc -l | tr -d ' ' || echo "0")
 
-  # Force a final compactor run before we lose the context
-  # (Only if there's a transcript and no session_state yet)
+  # Fallback: if no row was updated (orchestrator never registered), insert one
+  if [ "$ROWS_UPDATED" = "0" ]; then
+    "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+      "INSERT INTO orchestrator_state (session_id, status, started_at) VALUES ('${SESSION_ID}', 'clearing', CURRENT_TIMESTAMP) ON CONFLICT (session_id) DO UPDATE SET status='clearing';" \
+      2>/dev/null || true
+  fi
+
+  # Emergency compact if no session_state exists yet
   HAS_STATE=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
     "SELECT COUNT(*) FROM session_state WHERE session_id='${SESSION_ID}';" \
     2>/dev/null || echo "0")
 
   if [ "$HAS_STATE" = "0" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    # No compactor state yet - do a quick summary via Python
     "$PYTHON" "$(dirname "$0")/emergency_compact.py" "$SESSION_ID" "$TRANSCRIPT_PATH" 2>/dev/null || true
   fi
+
+  # Do NOT kill the orchestrator — it will be reused via session_reset
+  exit 0
 fi
 
+# ── Normal session end (not /clear): shut down orchestrator ──
 "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
   "UPDATE orchestrator_state SET status='stopping' WHERE session_id='${SESSION_ID}' AND status='running';" \
   2>/dev/null || true
 
-# Also send shutdown event via cognitive_inbox
+# Send shutdown event via cognitive_inbox
 "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
   "INSERT INTO cognitive_inbox (session_id, message_type, payload, status) VALUES ('${SESSION_ID}', 'session_event', '{\"event\":\"session_end\"}', 'pending');" \
   2>/dev/null || true

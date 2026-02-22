@@ -5,6 +5,18 @@
 
 set -e
 
+# AIDAM_PARENT_PID is set by the aidam.cmd launcher (PID of the terminal)
+PARENT_PID="${AIDAM_PARENT_PID:-}"
+
+# Load .env from plugin root (provides PGPASSWORD and other config)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
+
 PYTHON="C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe"
 INPUT=$(cat)
 PARSED=$("$PYTHON" -c "
@@ -78,22 +90,68 @@ PSQL="C:/Program Files/PostgreSQL/17/bin/psql.exe"
 # ------------------------------------------------------------------
 LAST_COMPACT_SIZE=0
 INJECT=""
+ORCHESTRATOR_PRESERVED=false
 
 if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
   # Pass the new session_id so inject_state.py can find the previous one from DB
   INJECT=$("$PYTHON" "$(dirname "$0")/inject_state.py" "$SOURCE" "$SESSION_ID" 2>/dev/null || echo "")
   if [ -n "$INJECT" ]; then
-    # Estimate the token size of the injected context for the Compactor
-    # so it doesn't re-trigger immediately on the injected content
     INJECT_CHARS=$(echo "$INJECT" | wc -c | tr -d ' ')
     LAST_COMPACT_SIZE=$(( INJECT_CHARS / 4 ))  # ~4 chars per token
   fi
 
-  # Kill previous orchestrator for THIS session if still running
-  if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    kill "$OLD_PID" 2>/dev/null || true
-    rm -f "$PID_FILE"
+  # Find the old session_id (the one with status='clearing' or 'injected')
+  OLD_SESSION_ID=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+    "SELECT session_id FROM orchestrator_state WHERE status IN ('clearing','injected') AND session_id != '${SESSION_ID}' ORDER BY started_at DESC LIMIT 1;" \
+    2>/dev/null | tr -d ' ' || echo "")
+
+  ORCHESTRATOR_PRESERVED=false
+
+  if [ -n "$OLD_SESSION_ID" ]; then
+    # Check if old orchestrator PID is still alive
+    OLD_PID_FILE="${PLUGIN_ROOT}/.orchestrator_${OLD_SESSION_ID}.pid"
+    if [ -f "$OLD_PID_FILE" ]; then
+      OLD_PID=$(cat "$OLD_PID_FILE")
+      if kill -0 "$OLD_PID" 2>/dev/null; then
+        # Orchestrator is alive — send session_reset instead of killing it
+        ESCAPED_TRANSCRIPT=$(echo "$TRANSCRIPT_PATH" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        "$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+          "INSERT INTO cognitive_inbox (session_id, message_type, payload, status) VALUES ('${OLD_SESSION_ID}', 'session_reset', '{\"new_session_id\":\"${SESSION_ID}\",\"transcript_path\":\"${ESCAPED_TRANSCRIPT}\"}', 'pending');" \
+          2>/dev/null || true
+
+        # Wait for orchestrator to swap to new session_id (up to 5s)
+        for i in 1 2 3 4 5; do
+          sleep 1
+          NEW_STATUS=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
+            "SELECT status FROM orchestrator_state WHERE session_id='${SESSION_ID}' AND status='running' LIMIT 1;" \
+            2>/dev/null | tr -d ' ' || echo "")
+          if [ "$NEW_STATUS" = "running" ]; then
+            ORCHESTRATOR_PRESERVED=true
+            # Rename PID file to new session_id
+            mv "$OLD_PID_FILE" "$PID_FILE" 2>/dev/null || true
+            break
+          fi
+        done
+      fi
+    fi
+  fi
+
+  # Fallback: if orchestrator was not preserved, clean up and let Phase 2 launch a new one
+  if [ "$ORCHESTRATOR_PRESERVED" = "false" ]; then
+    if [ -f "$PID_FILE" ]; then
+      OLD_PID=$(cat "$PID_FILE")
+      kill "$OLD_PID" 2>/dev/null || true
+      rm -f "$PID_FILE"
+    fi
+    # Also try old session PID file
+    if [ -n "$OLD_SESSION_ID" ]; then
+      OLD_PID_FILE="${PLUGIN_ROOT}/.orchestrator_${OLD_SESSION_ID}.pid"
+      if [ -f "$OLD_PID_FILE" ]; then
+        OLD_PID=$(cat "$OLD_PID_FILE")
+        kill "$OLD_PID" 2>/dev/null || true
+        rm -f "$OLD_PID_FILE"
+      fi
+    fi
   fi
 else
   # Normal startup: check if orchestrator for THIS session is already running
@@ -116,8 +174,13 @@ else
 fi
 
 # ------------------------------------------------------------------
-# PHASE 2: Launch orchestrator
+# PHASE 2: Launch orchestrator (skip if preserved from /clear)
 # ------------------------------------------------------------------
+
+if [ "$ORCHESTRATOR_PRESERVED" = "true" ]; then
+  # Orchestrator was preserved from /clear — skip launch, go straight to output
+  STATUS="running"
+else
 
 # Derive project slug from cwd (pass via stdin to avoid backslash issues on Windows)
 PROJECT_SLUG=$(echo "${CWD:-$(pwd)}" | "$PYTHON" -c "
@@ -143,6 +206,7 @@ node "$ORCHESTRATOR_SCRIPT" \
   "--compactor-budget=${COMPACTOR_BUDGET}" \
   "--curator-budget=${CURATOR_BUDGET}" \
   "--session-budget=${SESSION_BUDGET}" \
+  "--parent-pid=${PARENT_PID}" \
   > "$LOG_FILE" 2>&1 &
 
 ORCH_PID=$!
@@ -162,13 +226,31 @@ for i in 1 2 3; do
   fi
 done
 
+fi  # end of ORCHESTRATOR_PRESERVED check
+
 # ------------------------------------------------------------------
 # PHASE 3: Output — inject state (if /clear) or normal status
 # ------------------------------------------------------------------
 
+BRIEFING_FILE="${PLUGIN_ROOT}/scripts/system_briefing.txt"
+
 if [ -n "$INJECT" ]; then
   # inject_state.py already outputs the full hookSpecificOutput JSON
-  echo "$INJECT"
+  # Prepend the system briefing to the injected context
+  if [ -f "$BRIEFING_FILE" ]; then
+    AIDAM_BRIEFING_FILE="$BRIEFING_FILE" "$PYTHON" -c "
+import sys, json, os
+inject_json = sys.stdin.read()
+data = json.loads(inject_json)
+with open(os.environ['AIDAM_BRIEFING_FILE'], 'r') as f:
+    briefing = f.read()
+ctx = data['hookSpecificOutput']['additionalContext']
+data['hookSpecificOutput']['additionalContext'] = briefing + '\n\n---\n\n' + ctx
+print(json.dumps(data))
+" <<< "$INJECT" 2>/dev/null || echo "$INJECT"
+  else
+    echo "$INJECT"
+  fi
 else
   CONTEXT="[AIDAM Memory: active"
   if [ "$RETRIEVER_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, retriever=on"; fi
@@ -177,7 +259,22 @@ else
   if [ "$CURATOR_ENABLED" = "on" ]; then CONTEXT="${CONTEXT}, curator=on"; fi
   if [ "$STATUS" != "running" ]; then CONTEXT="${CONTEXT}, initializing..."; fi
   CONTEXT="${CONTEXT}]"
-  cat <<EOF
+
+  # Build JSON with system briefing via Python (handles escaping safely)
+  AIDAM_BRIEFING_FILE="$BRIEFING_FILE" AIDAM_STATUS="$CONTEXT" "$PYTHON" -c "
+import json, os
+status = os.environ.get('AIDAM_STATUS', '')
+briefing_path = os.environ.get('AIDAM_BRIEFING_FILE', '')
+parts = [status]
+if briefing_path:
+    try:
+        with open(briefing_path, 'r') as f:
+            parts.append(f.read())
+    except: pass
+ctx = '\n\n'.join(parts)
+out = {'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': ctx}}
+print(json.dumps(out))
+" 2>/dev/null || cat <<EOF
 {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"${CONTEXT}"}}
 EOF
 fi

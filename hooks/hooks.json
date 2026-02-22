@@ -1,39 +1,15 @@
 {
-  "description": "AIDAM Memory - Cognitive memory hooks for background Retriever and Learner",
+  "description": "AIDAM Memory - Cognitive memory with background orchestrator. Custom /commands via UserPromptSubmit router.",
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup",
+        "matcher": "startup|clear|compact|resume",
         "hooks": [
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/on_session_start.sh\"",
             "timeout": 15,
             "statusMessage": "Starting AIDAM memory system..."
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -c '\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/on_prompt_submit.py\"'",
-            "timeout": 8,
-            "statusMessage": "Retrieving memory context..."
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -c '\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/on_tool_use.py\"'",
-            "async": true,
-            "timeout": 5
           }
         ]
       }
@@ -46,6 +22,17 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/on_session_end.sh\"",
             "timeout": 10,
             "statusMessage": "Stopping AIDAM memory system..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe\" \"${CLAUDE_PLUGIN_ROOT}/scripts/command_router.py\"",
+            "timeout": 35
           }
         ]
       }

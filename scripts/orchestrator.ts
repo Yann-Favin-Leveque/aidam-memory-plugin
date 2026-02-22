@@ -48,6 +48,17 @@ interface OrchestratorConfig {
   batchWindowMs: number;
   batchMinSize: number;
   batchMaxSize: number;
+  // Parent process monitoring
+  parentPid: number;
+}
+
+interface AgentCostEntry {
+  invocationCount: number;
+  totalCostUsd: number;
+  lastCostUsd: number;
+  budgetPerCall: number;
+  firstInvocationAt: number | null;
+  lastInvocationAt: number | null;
 }
 
 interface CognitiveMessage {
@@ -137,6 +148,8 @@ class Orchestrator {
   private lastCompactedSize: number = 0;
   private compactorVersion: number = 0;
   private totalCostUsd: number = 0;
+  private totalInvocations: number = 0;
+  private agentCosts: Record<string, AgentCostEntry> = {};
   private lastCuratorRun: number = 0;
   // Learner batch buffer
   private learnerBuffer: CognitiveMessage[] = [];
@@ -150,19 +163,94 @@ class Orchestrator {
     this.lastCompactedSize = config.lastCompactSize;
   }
 
+  private initAgentCosts(): void {
+    const agents = [
+      { name: "retriever_a", budget: this.config.retrieverABudget },
+      { name: "retriever_b", budget: this.config.retrieverBBudget },
+      { name: "learner", budget: this.config.learnerBudget },
+      { name: "compactor", budget: this.config.compactorBudget },
+      { name: "curator", budget: this.config.curatorBudget },
+    ];
+    for (const a of agents) {
+      this.agentCosts[a.name] = {
+        invocationCount: 0,
+        totalCostUsd: 0,
+        lastCostUsd: 0,
+        budgetPerCall: a.budget,
+        firstInvocationAt: null,
+        lastInvocationAt: null,
+      };
+    }
+  }
+
+  private recordAgentCost(agentName: string, costUsd: number): void {
+    this.totalCostUsd += costUsd;
+    this.totalInvocations++;
+    const entry = this.agentCosts[agentName];
+    if (entry) {
+      entry.invocationCount++;
+      entry.totalCostUsd += costUsd;
+      entry.lastCostUsd = costUsd;
+      const now = Date.now();
+      if (!entry.firstInvocationAt) entry.firstInvocationAt = now;
+      entry.lastInvocationAt = now;
+    }
+  }
+
+  private isAgentEnabled(name: string): boolean {
+    switch (name) {
+      case "retriever_a": case "retriever_b": return this.config.retrieverEnabled;
+      case "learner": return this.config.learnerEnabled;
+      case "compactor": return this.config.compactorEnabled;
+      case "curator": return this.config.curatorEnabled;
+      default: return false;
+    }
+  }
+
+  private isAgentBusy(name: string): boolean {
+    switch (name) {
+      case "retriever_a": return this.retrieverABusy;
+      case "retriever_b": return this.retrieverBBusy;
+      case "learner": return this.learnerBusy;
+      case "compactor": return this.compactorBusy;
+      case "curator": return this.curatorBusy;
+      default: return false;
+    }
+  }
+
   async start(): Promise<void> {
     log("Starting orchestrator...");
+    this.initAgentCosts();
     await this.db.connect();
+
+    // Kill any existing orchestrator running for the same parent PID
+    // (means user started a new session in the same terminal)
+    if (this.config.parentPid) {
+      const stale = await this.db.query(
+        `SELECT session_id, pid FROM orchestrator_state
+         WHERE parent_pid = $1 AND status IN ('starting', 'running') AND session_id != $2`,
+        [this.config.parentPid, this.config.sessionId]
+      );
+      for (const row of stale.rows) {
+        log(`Killing stale orchestrator for same terminal: session=${row.session_id}, pid=${row.pid}`);
+        try { process.kill(row.pid); } catch { /* already dead */ }
+        await this.db.query(
+          `UPDATE orchestrator_state SET status='replaced', stopped_at=CURRENT_TIMESTAMP
+           WHERE session_id=$1 AND status IN ('starting','running')`,
+          [row.session_id]
+        );
+      }
+    }
 
     // Register in orchestrator_state (upsert)
     await this.db.query(
-      `INSERT INTO orchestrator_state (session_id, pid, retriever_enabled, learner_enabled, status)
-       VALUES ($1, $2, $3, $4, 'starting')
+      `INSERT INTO orchestrator_state (session_id, pid, parent_pid, retriever_enabled, learner_enabled, status)
+       VALUES ($1, $2, $3, $4, $5, 'starting')
        ON CONFLICT (session_id) DO UPDATE SET
-         pid = $2, retriever_enabled = $3, learner_enabled = $4,
+         pid = $2, parent_pid = $3, retriever_enabled = $4, learner_enabled = $5,
          status = 'starting', started_at = CURRENT_TIMESTAMP,
          last_heartbeat_at = CURRENT_TIMESTAMP, stopped_at = NULL, error_message = NULL`,
-      [this.config.sessionId, process.pid, this.config.retrieverEnabled, this.config.learnerEnabled]
+      [this.config.sessionId, process.pid, this.config.parentPid, this.config.retrieverEnabled, this.config.learnerEnabled]
     );
 
     // Initialize sessions
@@ -285,6 +373,9 @@ class Orchestrator {
           this.retrieverASessionId = msg.session_id;
           log(`Retriever A session ID: ${this.retrieverASessionId}`);
         }
+        if (msg.type === "result") {
+          this.recordAgentCost("retriever_a", (msg as SDKResultMessage).total_cost_usd);
+        }
       }
     } catch (err: any) {
       log(`Retriever A init error: ${err.message}`);
@@ -322,6 +413,9 @@ class Orchestrator {
         if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
           this.retrieverBSessionId = msg.session_id;
           log(`Retriever B session ID: ${this.retrieverBSessionId}`);
+        }
+        if (msg.type === "result") {
+          this.recordAgentCost("retriever_b", (msg as SDKResultMessage).total_cost_usd);
         }
       }
     } catch (err: any) {
@@ -374,6 +468,9 @@ class Orchestrator {
           this.learnerSessionId = msg.session_id;
           log(`Learner session ID: ${this.learnerSessionId}`);
         }
+        if (msg.type === "result") {
+          this.recordAgentCost("learner", (msg as SDKResultMessage).total_cost_usd);
+        }
       }
     } catch (err: any) {
       log(`Learner init error: ${err.message}`);
@@ -400,11 +497,67 @@ class Orchestrator {
     this.heartbeatTimer = setInterval(async () => {
       if (!this.running) return;
       try {
+        // Update orchestrator_state with summary cost
         await this.db.query(
-          `UPDATE orchestrator_state SET last_heartbeat_at = CURRENT_TIMESTAMP
+          `UPDATE orchestrator_state SET last_heartbeat_at = CURRENT_TIMESTAMP,
+             total_cost_usd = $2, total_invocations = $3
            WHERE session_id = $1 AND status = 'running'`,
-          [this.config.sessionId]
+          [this.config.sessionId, this.totalCostUsd, this.totalInvocations]
         );
+
+        // Upsert per-agent usage
+        for (const [agentName, entry] of Object.entries(this.agentCosts)) {
+          const enabled = this.isAgentEnabled(agentName);
+          const status = !enabled ? "disabled" : (this.isAgentBusy(agentName) ? "busy" : "idle");
+          await this.db.query(
+            `INSERT INTO agent_usage
+               (session_id, agent_name, invocation_count, total_cost_usd, last_cost_usd,
+                budget_per_call, budget_session, first_invocation_at, last_invocation_at, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (session_id, agent_name) DO UPDATE SET
+               invocation_count = $3, total_cost_usd = $4, last_cost_usd = $5,
+               first_invocation_at = COALESCE(agent_usage.first_invocation_at, $8),
+               last_invocation_at = $9, status = $10`,
+            [
+              this.config.sessionId,
+              agentName,
+              entry.invocationCount,
+              entry.totalCostUsd,
+              entry.lastCostUsd,
+              entry.budgetPerCall,
+              this.config.sessionBudget,
+              entry.firstInvocationAt ? new Date(entry.firstInvocationAt) : null,
+              entry.lastInvocationAt ? new Date(entry.lastInvocationAt) : null,
+              status,
+            ]
+          );
+        }
+        // Self-terminate if parent process is gone
+        if (this.config.parentPid) {
+          try {
+            process.kill(this.config.parentPid, 0); // throws if process doesn't exist
+          } catch {
+            log(`Parent PID ${this.config.parentPid} is gone — session ended, self-terminating`);
+            await this.shutdown();
+            return;
+          }
+        } else if (this.config.transcriptPath) {
+          // Fallback: transcript staleness check (for sessions not launched via aidam cmd)
+          try {
+            const stat = fs.statSync(this.config.transcriptPath);
+            const staleSecs = (Date.now() - stat.mtimeMs) / 1000;
+            if (staleSecs > 300) {
+              log(`Transcript stale (${Math.round(staleSecs)}s) — session likely ended, self-terminating`);
+              await this.shutdown();
+              return;
+            }
+          } catch {
+            log("Transcript file not found — session ended, self-terminating");
+            await this.shutdown();
+            return;
+          }
+        }
+
       } catch (err: any) {
         log(`Heartbeat error: ${err.message}`);
       }
@@ -449,6 +602,12 @@ class Orchestrator {
           } else {
             log("Compactor trigger ignored: no compactor session or transcript path");
           }
+          await this.markCompleted(msg.id);
+        } else if (msg.message_type === "learn_trigger" && this.config.learnerEnabled) {
+          await this.routeToLearnerExplicit(msg);
+          await this.markCompleted(msg.id);
+        } else if (msg.message_type === "session_reset") {
+          await this.handleSessionReset(msg);
           await this.markCompleted(msg.id);
         } else if (msg.message_type === "session_event") {
           const event = msg.payload?.event;
@@ -553,7 +712,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
           if (resultMsg.subtype === "success") {
             resultText = resultMsg.result || "";
             log(`Retriever A result: ${resultText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
-            this.totalCostUsd += resultMsg.total_cost_usd;
+            this.recordAgentCost("retriever_a", resultMsg.total_cost_usd);
           } else {
             log(`Retriever A error: ${resultMsg.subtype}`);
           }
@@ -610,7 +769,7 @@ Search memory for relevant context for this user's work. If nothing relevant, re
           if (resultMsg.subtype === "success") {
             resultText = resultMsg.result || "";
             log(`Retriever B result: ${resultText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
-            this.totalCostUsd += resultMsg.total_cost_usd;
+            this.recordAgentCost("retriever_b", resultMsg.total_cost_usd);
           } else {
             log(`Retriever B error: ${resultMsg.subtype}`);
           }
@@ -661,7 +820,12 @@ Check what's already covered. Focus on COMPLEMENTARY information or respond SKIP
           cwd: this.config.cwd,
         },
       });
-      for await (const _ of response) {} // drain
+      for await (const sdkMsg of response) {
+        if (sdkMsg.type === "result") {
+          const resultMsg = sdkMsg as SDKResultMessage;
+          this.recordAgentCost(target === "A" ? "retriever_a" : "retriever_b", resultMsg.total_cost_usd);
+        }
+      }
     } catch {
       // Best effort — race conditions are OK
     }
@@ -782,7 +946,7 @@ Analyze ALL observations together. Look for patterns BETWEEN them. For each obse
           if (resultMsg.subtype === "success") {
             const summary = (resultMsg.result || "SKIP").slice(0, 200);
             log(`Learner (batch ${batch.length}): ${summary}, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
-            this.totalCostUsd += resultMsg.total_cost_usd;
+            this.recordAgentCost("learner", resultMsg.total_cost_usd);
           } else {
             log(`Learner batch error: ${resultMsg.subtype}`);
           }
@@ -868,7 +1032,7 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
           if (resultMsg.subtype === "success") {
             const summary = (resultMsg.result || "SKIP").slice(0, 200);
             log(`Learner: ${summary}, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
-            this.totalCostUsd += resultMsg.total_cost_usd;
+            this.recordAgentCost("learner", resultMsg.total_cost_usd);
             this.slidingWindow.addClaudeSummary(`[Claude used ${payload.tool_name}: ${summary}]`);
           } else {
             log(`Learner error: ${resultMsg.subtype}`);
@@ -877,6 +1041,84 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
       }
     } catch (err: any) {
       log(`Learner error: ${err.message}`);
+    } finally {
+      this.learnerBusy = false;
+      this.checkSessionBudget();
+    }
+  }
+
+  /**
+   * Route an explicit learn_trigger from the MCP aidam_learn tool to the Learner agent.
+   * Unlike tool_use observations, this receives free-form context text.
+   */
+  private async routeToLearnerExplicit(msg: CognitiveMessage): Promise<void> {
+    if (!this.learnerSessionId) {
+      log("Learner not initialized, skipping learn_trigger");
+      return;
+    }
+    if (this.learnerBusy) {
+      log("Learner busy, re-queuing learn_trigger");
+      await this.db.query("UPDATE cognitive_inbox SET status = 'pending' WHERE id = $1", [msg.id]);
+      return;
+    }
+
+    const context = msg.payload?.context || "";
+    if (!context) {
+      log("learn_trigger: empty context, skipping");
+      return;
+    }
+
+    this.learnerBusy = true;
+    const learnerPrompt = `[EXPLICIT LEARNING REQUEST]
+The user/agent has flagged the following observations for learning:
+
+${context.slice(0, 6000)}
+
+Analyze this content carefully. Extract any valuable learnings, error solutions, or reusable patterns and save them to memory (check for duplicates first). If nothing worth saving, respond with SKIP.`;
+
+    try {
+      const response = query({
+        prompt: learnerPrompt,
+        options: {
+          resume: this.learnerSessionId,
+          mcpServers: this.getMcpConfig(),
+          allowedTools: [
+            "mcp__memory__memory_search",
+            "mcp__memory__memory_save_learning",
+            "mcp__memory__memory_save_error",
+            "mcp__memory__memory_save_pattern",
+            "mcp__memory__memory_drilldown_save",
+            "mcp__memory__memory_drilldown_search",
+            "mcp__memory__memory_get_project",
+            "mcp__memory__memory_get_recent_learnings",
+            "mcp__memory__memory_index_upsert",
+            "mcp__memory__memory_index_search",
+            "mcp__memory__db_select",
+            "mcp__memory__db_execute",
+            "Bash",
+          ],
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          maxTurns: 8,
+          maxBudgetUsd: this.config.learnerBudget,
+          cwd: this.config.cwd,
+        },
+      });
+
+      for await (const sdkMsg of response) {
+        if (sdkMsg.type === "result") {
+          const resultMsg = sdkMsg as SDKResultMessage;
+          if (resultMsg.subtype === "success") {
+            const summary = (resultMsg.result || "SKIP").slice(0, 200);
+            log(`Learner (explicit): ${summary}, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+            this.recordAgentCost("learner", resultMsg.total_cost_usd);
+          } else {
+            log(`Learner (explicit) error: ${resultMsg.subtype}`);
+          }
+        }
+      }
+    } catch (err: any) {
+      log(`Learner explicit error: ${err.message}`);
     } finally {
       this.learnerBusy = false;
       this.checkSessionBudget();
@@ -916,6 +1158,9 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
         if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
           this.compactorSessionId = msg.session_id;
           log(`Compactor session ID: ${this.compactorSessionId}`);
+        }
+        if (msg.type === "result") {
+          this.recordAgentCost("compactor", (msg as SDKResultMessage).total_cost_usd);
         }
       }
     } catch (err: any) {
@@ -991,6 +1236,29 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
                 .join("\n");
               if (text) {
                 allChunks.push({ text: `[CLAUDE] ${text.slice(0, 3000)}`, byteOffset });
+              }
+              // Extract lightweight tool metadata
+              const toolMetas: string[] = [];
+              for (const b of blocks) {
+                if (b.type === "tool_use" && b.name) {
+                  const inp = b.input || {};
+                  let meta = b.name;
+                  if (b.name === "Read" || b.name === "Write" || b.name === "Edit") {
+                    meta += `(${(inp.file_path || "").slice(-80)})`;
+                  } else if (b.name === "Glob") {
+                    meta += `(${inp.pattern || ""})`;
+                  } else if (b.name === "Grep") {
+                    meta += `(${(inp.pattern || "").slice(0, 60)}${inp.path ? " in " + inp.path.slice(-40) : ""})`;
+                  } else if (b.name === "WebFetch") {
+                    meta += `(${(inp.url || "").slice(0, 80)})`;
+                  } else if (b.name === "Bash") {
+                    meta += `(${(inp.command || "").slice(0, 100)})`;
+                  }
+                  toolMetas.push(meta);
+                }
+              }
+              if (toolMetas.length > 0) {
+                allChunks.push({ text: `[TOOLS] ${toolMetas.join(" | ")}`, byteOffset });
               }
             }
           }
@@ -1075,6 +1343,7 @@ Build the initial session state document from this conversation.`;
           if (resultMsg.subtype === "success") {
             stateText = resultMsg.result || "";
             log(`Compactor v${this.compactorVersion}: ${stateText.length} chars, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+            this.recordAgentCost("compactor", resultMsg.total_cost_usd);
           } else {
             log(`Compactor error: ${resultMsg.subtype}`);
             log(`Compactor error details: ${JSON.stringify(resultMsg).slice(0, 500)}`);
@@ -1167,6 +1436,9 @@ Build the initial session state document from this conversation.`;
           this.curatorSessionId = msg.session_id;
           log(`Curator session ID: ${this.curatorSessionId}`);
         }
+        if (msg.type === "result") {
+          this.recordAgentCost("curator", (msg as SDKResultMessage).total_cost_usd);
+        }
       }
     } catch (err: any) {
       log(`Curator init error: ${err.message}`);
@@ -1233,7 +1505,7 @@ Be efficient. If the database is clean, report "No actions needed".`;
             const report = (resultMsg.result || "No report").slice(0, 500);
             log(`Curator report: ${report}`);
             log(`Curator cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
-            this.totalCostUsd += resultMsg.total_cost_usd;
+            this.recordAgentCost("curator", resultMsg.total_cost_usd);
           } else {
             log(`Curator error: ${resultMsg.subtype}`);
           }
@@ -1245,6 +1517,88 @@ Be efficient. If the database is clean, report "No actions needed".`;
       this.curatorBusy = false;
       this.checkSessionBudget();
     }
+  }
+
+  // ============================================
+  // SESSION RESET (preserve orchestrator across /clear)
+  // ============================================
+
+  private async handleSessionReset(msg: CognitiveMessage): Promise<void> {
+    const newSessionId = msg.payload?.new_session_id;
+    const newTranscriptPath = msg.payload?.transcript_path;
+
+    if (!newSessionId) {
+      log("session_reset: missing new_session_id, ignoring");
+      return;
+    }
+
+    const oldSessionId = this.config.sessionId;
+    log(`Session reset: ${oldSessionId} → ${newSessionId}`);
+
+    // 1. Flush any remaining learner batch for the old session
+    await this.flushLearnerBatch();
+
+    // 2. Run a final compactor on the old transcript (if compactor enabled and transcript exists)
+    if (this.compactorSessionId && this.config.transcriptPath) {
+      try {
+        const stat = fs.statSync(this.config.transcriptPath);
+        const estimatedTokens = Math.floor(stat.size / 6);
+        if (estimatedTokens - this.lastCompactedSize > 2000) {
+          log("Session reset: running final compactor on old transcript");
+          await this.runCompactor(this.config.transcriptPath, estimatedTokens);
+        }
+      } catch {
+        log("Session reset: could not run final compactor (transcript not found)");
+      }
+    }
+
+    // 3. Mark old orchestrator_state row as 'cleared'
+    try {
+      await this.db.query(
+        `UPDATE orchestrator_state SET status = 'cleared'
+         WHERE session_id = $1 AND status NOT IN ('injected')`,
+        [oldSessionId]
+      );
+    } catch {
+      /* best effort */
+    }
+
+    // 4. Swap session_id and transcript path
+    this.config.sessionId = newSessionId;
+    if (newTranscriptPath) {
+      this.config.transcriptPath = newTranscriptPath;
+    }
+
+    // 5. Upsert new orchestrator_state row
+    await this.db.query(
+      `INSERT INTO orchestrator_state (session_id, pid, parent_pid, retriever_enabled, learner_enabled, status,
+         retriever_session_id, learner_session_id)
+       VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
+       ON CONFLICT (session_id) DO UPDATE SET
+         pid = $2, parent_pid = $3, retriever_enabled = $4, learner_enabled = $5,
+         status = 'running', started_at = CURRENT_TIMESTAMP,
+         last_heartbeat_at = CURRENT_TIMESTAMP, stopped_at = NULL, error_message = NULL,
+         retriever_session_id = $6, learner_session_id = $7`,
+      [
+        newSessionId, process.pid, this.config.parentPid,
+        this.config.retrieverEnabled, this.config.learnerEnabled,
+        this.retrieverASessionId || this.retrieverBSessionId || null,
+        this.learnerSessionId || null
+      ]
+    );
+
+    // 6. Reset volatile state (keep agent sessions, DB connection, timers, cost tracking)
+    this.slidingWindow = new SlidingWindow(5);
+    this.learnerBuffer = [];
+    this.injectionHistory = [];
+    this.lastCompactedSize = 0;
+    this.compactorVersion = 0;
+    if (this.learnerBatchTimer) {
+      clearTimeout(this.learnerBatchTimer);
+      this.learnerBatchTimer = undefined;
+    }
+
+    log(`Session reset complete. Now serving session ${newSessionId}`);
   }
 
   // ============================================
@@ -1288,7 +1642,7 @@ Be efficient. If the database is clean, report "No actions needed".`;
     try {
       await this.db.query(
         `UPDATE orchestrator_state SET status = 'stopped', stopped_at = CURRENT_TIMESTAMP
-         WHERE session_id = $1`,
+         WHERE session_id = $1 AND status NOT IN ('cleared', 'injected', 'clearing')`,
         [this.config.sessionId]
       );
     } catch {
@@ -1376,11 +1730,17 @@ async function main(): Promise<void> {
     batchWindowMs: parseInt(getArg("batch-window", "10000"), 10),
     batchMinSize: parseInt(getArg("batch-min", "3"), 10),
     batchMaxSize: parseInt(getArg("batch-max", "10"), 10),
+    parentPid: parseInt(getArg("parent-pid", "0"), 10) || 0,
   };
 
   log(`Config: session=${config.sessionId}, retriever=${config.retrieverEnabled}, learner=${config.learnerEnabled}, compactor=${config.compactorEnabled}, curator=${config.curatorEnabled}`);
   log(`Budgets: retrieverA=$${config.retrieverABudget}, retrieverB=$${config.retrieverBBudget}, learner=$${config.learnerBudget}, compactor=$${config.compactorBudget}, curator=$${config.curatorBudget}, session=$${config.sessionBudget}`);
   log(`Batch: window=${config.batchWindowMs}ms, min=${config.batchMinSize}, max=${config.batchMaxSize}`);
+  if (config.parentPid) {
+    log(`Parent PID: ${config.parentPid} (will self-terminate if parent dies)`);
+  } else {
+    log(`WARNING: No parent PID — using transcript staleness for orphan detection`);
+  }
   if (config.transcriptPath) {
     log(`Transcript path: ${config.transcriptPath}`);
     try {

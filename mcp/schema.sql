@@ -428,3 +428,24 @@ BEGIN
     WHERE c.project_id = p_project_id OR c.project_id IS NULL;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================
+-- AGENT USAGE TRACKING (added in v5)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS agent_usage (
+    id SERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent_name TEXT NOT NULL,           -- 'retriever_a', 'retriever_b', 'learner', 'compactor', 'curator'
+    invocation_count INTEGER DEFAULT 0,
+    total_cost_usd REAL DEFAULT 0.0,
+    last_cost_usd REAL DEFAULT 0.0,
+    budget_per_call REAL DEFAULT 0.0,
+    budget_session REAL DEFAULT 0.0,
+    first_invocation_at TIMESTAMP,
+    last_invocation_at TIMESTAMP,
+    status TEXT DEFAULT 'idle',         -- 'idle', 'busy', 'disabled'
+    UNIQUE(session_id, agent_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_usage_session ON agent_usage(session_id);
