@@ -10,12 +10,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp"))
 import memory_pg as mem
 
 def main():
-    # Find running orchestrator
-    orch_rows = mem.select_query(
-        "SELECT session_id, pid, status, started_at, last_heartbeat_at "
-        "FROM orchestrator_state WHERE status = 'running' "
-        "ORDER BY last_heartbeat_at DESC NULLS LAST LIMIT 1"
-    )
+    # Find orchestrator for THIS session (or fallback to most recent)
+    current_session = os.environ.get("AIDAM_SESSION_ID", "")
+    if current_session:
+        orch_rows = mem.select_query(
+            "SELECT session_id, pid, status, started_at, last_heartbeat_at "
+            "FROM orchestrator_state WHERE session_id = %s AND status = 'running' LIMIT 1",
+            (current_session,)
+        )
+    else:
+        orch_rows = []
+
+    if not orch_rows:
+        # Fallback: find any running orchestrator (backwards compat)
+        orch_rows = mem.select_query(
+            "SELECT session_id, pid, status, started_at, last_heartbeat_at "
+            "FROM orchestrator_state WHERE status = 'running' "
+            "ORDER BY last_heartbeat_at DESC NULLS LAST LIMIT 1"
+        )
     if not orch_rows:
         print("No running AIDAM orchestrator found.", file=sys.stderr)
         return

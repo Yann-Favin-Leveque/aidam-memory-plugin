@@ -64,6 +64,7 @@ def main():
         env = os.environ.copy()
         env["AIDAM_CMD_ARGS"] = cmd_args
         env["AIDAM_PLUGIN_ROOT"] = PLUGIN_ROOT
+        env["AIDAM_SESSION_ID"] = data.get("session_id", "")
 
         result = subprocess.run(
             runner,
