@@ -644,6 +644,79 @@ class Orchestrator {
   // Track what has been injected this session for retriever awareness
   private injectionHistory: string[] = [];
 
+  /**
+   * Read the last ~10k chars of the session transcript JSONL,
+   * extracting [USER], [CLAUDE], and [TOOLS] chunks for retriever context.
+   */
+  private readTranscriptContext(maxChars: number = 10000): string {
+    const transcriptPath = this.config.transcriptPath;
+    if (!transcriptPath) return "(no transcript available)";
+
+    let rawContent: string;
+    try {
+      rawContent = fs.readFileSync(transcriptPath, "utf-8");
+    } catch {
+      return "(transcript not accessible)";
+    }
+
+    const lines = rawContent.split("\n").filter((l) => l.trim());
+    const chunks: string[] = [];
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "user" && entry.message?.content) {
+          const content = typeof entry.message.content === "string"
+            ? entry.message.content
+            : JSON.stringify(entry.message.content);
+          chunks.push(`[USER] ${content.slice(0, 2000)}`);
+        } else if (entry.type === "assistant" && entry.message?.content) {
+          const blocks = entry.message.content;
+          if (Array.isArray(blocks)) {
+            const text = blocks
+              .filter((b: any) => b.type === "text")
+              .map((b: any) => b.text)
+              .join("\n");
+            if (text) {
+              chunks.push(`[CLAUDE] ${text.slice(0, 2000)}`);
+            }
+            // Lightweight tool metadata
+            const toolMetas: string[] = [];
+            for (const b of blocks) {
+              if (b.type === "tool_use" && b.name) {
+                const inp = b.input || {};
+                let meta = b.name;
+                if (["Read", "Write", "Edit"].includes(b.name)) {
+                  meta += `(${(inp.file_path || "").slice(-60)})`;
+                } else if (b.name === "Bash") {
+                  meta += `(${(inp.command || "").slice(0, 80)})`;
+                } else if (b.name === "Grep") {
+                  meta += `(${(inp.pattern || "").slice(0, 40)})`;
+                }
+                toolMetas.push(meta);
+              }
+            }
+            if (toolMetas.length > 0) {
+              chunks.push(`[TOOLS] ${toolMetas.join(" | ")}`);
+            }
+          }
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    // Take the last N chars worth of chunks
+    let result = "";
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      const entry = chunks[i] + "\n\n";
+      if (result.length + entry.length > maxChars) break;
+      result = entry + result;
+    }
+
+    return result.trim() || "(empty transcript)";
+  }
+
   private async routeToRetriever(msg: CognitiveMessage): Promise<void> {
     const prompt = msg.payload.prompt;
     const promptHash = msg.payload.prompt_hash;
@@ -663,13 +736,19 @@ class Orchestrator {
       ? `\n\n[PREVIOUSLY INJECTED THIS SESSION — avoid repeating]\n${this.injectionHistory.slice(-5).map((s, i) => `${i + 1}. ${s}`).join("\n")}`
       : "";
 
-    const retrieverPrompt = `[NEW USER PROMPT]
+    // Read last ~10k chars of transcript for rich conversation context
+    const transcriptContext = this.readTranscriptContext(10000);
+
+    const retrieverPrompt = `[EXPLICIT QUERY]
 ${prompt}
 
-[CONVERSATION CONTEXT - Last turns]
-${this.slidingWindow.format()}${injectionCtx}
+[CONVERSATION TRANSCRIPT — last ~10k chars]
+${transcriptContext}${injectionCtx}
 
-Search memory for relevant context for this user's work. If nothing relevant, respond with SKIP.`;
+INSTRUCTIONS: Search memory for this query. Two passes:
+1. PRIORITY — search for exactly what the explicit query asks for. Send results immediately.
+2. BONUS — look at the conversation transcript. Do you know other useful things based on what the user is working on? If yes, add them.
+If nothing relevant at all, respond with SKIP.`;
 
     // Launch both retrievers in parallel
     const promiseA = this.retrieverASessionId && !this.retrieverABusy

@@ -52,8 +52,9 @@ const DB_CONFIG = {
     port: 5432,
 };
 class SlidingWindow {
+    turns = [];
+    maxTurns;
     constructor(maxTurns = 5) {
-        this.turns = [];
         this.maxTurns = maxTurns;
     }
     addUserTurn(prompt) {
@@ -83,26 +84,34 @@ class SlidingWindow {
 // ORCHESTRATOR
 // ============================================
 class Orchestrator {
+    config;
+    db;
+    retrieverASessionId; // Keyword retriever
+    retrieverBSessionId; // Cascade retriever
+    learnerSessionId;
+    compactorSessionId;
+    curatorSessionId;
+    running = false;
+    slidingWindow;
+    pollTimer;
+    heartbeatTimer;
+    compactorTimer;
+    curatorTimer;
+    retrieverABusy = false;
+    retrieverBBusy = false;
+    learnerBusy = false;
+    compactorBusy = false;
+    curatorBusy = false;
+    lastCompactedSize = 0;
+    compactorVersion = 0;
+    totalCostUsd = 0;
+    totalInvocations = 0;
+    agentCosts = {};
+    lastCuratorRun = 0;
+    // Learner batch buffer
+    learnerBuffer = [];
+    learnerBatchTimer;
     constructor(config) {
-        this.running = false;
-        this.retrieverABusy = false;
-        this.retrieverBBusy = false;
-        this.learnerBusy = false;
-        this.compactorBusy = false;
-        this.curatorBusy = false;
-        this.lastCompactedSize = 0;
-        this.compactorVersion = 0;
-        this.totalCostUsd = 0;
-        this.totalInvocations = 0;
-        this.agentCosts = {};
-        this.lastCuratorRun = 0;
-        // Learner batch buffer
-        this.learnerBuffer = [];
-        // ============================================
-        // RETRIEVER ROUTING
-        // ============================================
-        // Track what has been injected this session for retriever awareness
-        this.injectionHistory = [];
         this.config = config;
         this.db = new pg_1.Client(DB_CONFIG);
         this.slidingWindow = new SlidingWindow(5);
@@ -521,6 +530,10 @@ class Orchestrator {
                     }
                     await this.markCompleted(msg.id);
                 }
+                else if (msg.message_type === "learn_trigger" && this.config.learnerEnabled) {
+                    await this.routeToLearnerExplicit(msg);
+                    await this.markCompleted(msg.id);
+                }
                 else if (msg.message_type === "session_reset") {
                     await this.handleSessionReset(msg);
                     await this.markCompleted(msg.id);
@@ -552,6 +565,85 @@ class Orchestrator {
     async markFailed(id) {
         await this.db.query("UPDATE cognitive_inbox SET status = 'failed' WHERE id = $1", [id]);
     }
+    // ============================================
+    // RETRIEVER ROUTING
+    // ============================================
+    // Track what has been injected this session for retriever awareness
+    injectionHistory = [];
+    /**
+     * Read the last ~10k chars of the session transcript JSONL,
+     * extracting [USER], [CLAUDE], and [TOOLS] chunks for retriever context.
+     */
+    readTranscriptContext(maxChars = 10000) {
+        const transcriptPath = this.config.transcriptPath;
+        if (!transcriptPath)
+            return "(no transcript available)";
+        let rawContent;
+        try {
+            rawContent = fs.readFileSync(transcriptPath, "utf-8");
+        }
+        catch {
+            return "(transcript not accessible)";
+        }
+        const lines = rawContent.split("\n").filter((l) => l.trim());
+        const chunks = [];
+        for (const line of lines) {
+            try {
+                const entry = JSON.parse(line);
+                if (entry.type === "user" && entry.message?.content) {
+                    const content = typeof entry.message.content === "string"
+                        ? entry.message.content
+                        : JSON.stringify(entry.message.content);
+                    chunks.push(`[USER] ${content.slice(0, 2000)}`);
+                }
+                else if (entry.type === "assistant" && entry.message?.content) {
+                    const blocks = entry.message.content;
+                    if (Array.isArray(blocks)) {
+                        const text = blocks
+                            .filter((b) => b.type === "text")
+                            .map((b) => b.text)
+                            .join("\n");
+                        if (text) {
+                            chunks.push(`[CLAUDE] ${text.slice(0, 2000)}`);
+                        }
+                        // Lightweight tool metadata
+                        const toolMetas = [];
+                        for (const b of blocks) {
+                            if (b.type === "tool_use" && b.name) {
+                                const inp = b.input || {};
+                                let meta = b.name;
+                                if (["Read", "Write", "Edit"].includes(b.name)) {
+                                    meta += `(${(inp.file_path || "").slice(-60)})`;
+                                }
+                                else if (b.name === "Bash") {
+                                    meta += `(${(inp.command || "").slice(0, 80)})`;
+                                }
+                                else if (b.name === "Grep") {
+                                    meta += `(${(inp.pattern || "").slice(0, 40)})`;
+                                }
+                                toolMetas.push(meta);
+                            }
+                        }
+                        if (toolMetas.length > 0) {
+                            chunks.push(`[TOOLS] ${toolMetas.join(" | ")}`);
+                        }
+                    }
+                }
+            }
+            catch {
+                // Skip malformed lines
+            }
+        }
+        // Take the last N chars worth of chunks
+        let result = "";
+        for (let i = chunks.length - 1; i >= 0; i--) {
+            const entry = chunks[i] + "\n\n";
+            if (result.length + entry.length > maxChars)
+                break;
+            result = entry + result;
+        }
+        return result.trim() || "(empty transcript)";
+    }
     async routeToRetriever(msg) {
         const prompt = msg.payload.prompt;
         const promptHash = msg.payload.prompt_hash;
@@ -567,13 +659,18 @@ class Orchestrator {
         const injectionCtx = this.injectionHistory.length > 0
             ? `\n\n[PREVIOUSLY INJECTED THIS SESSION — avoid repeating]\n${this.injectionHistory.slice(-5).map((s, i) => `${i + 1}. ${s}`).join("\n")}`
             : "";
-        const retrieverPrompt = `[NEW USER PROMPT]
+        // Read last ~10k chars of transcript for rich conversation context
+        const transcriptContext = this.readTranscriptContext(10000);
+        const retrieverPrompt = `[EXPLICIT QUERY]
 ${prompt}
 
-[CONVERSATION CONTEXT - Last turns]
-${this.slidingWindow.format()}${injectionCtx}
+[CONVERSATION TRANSCRIPT — last ~10k chars]
+${transcriptContext}${injectionCtx}
 
-Search memory for relevant context for this user's work. If nothing relevant, respond with SKIP.`;
+INSTRUCTIONS: Search memory for this query. Two passes:
+1. PRIORITY — search for exactly what the explicit query asks for. Send results immediately.
+2. BONUS — look at the conversation transcript. Do you know other useful things based on what the user is working on? If yes, add them.
+If nothing relevant at all, respond with SKIP.`;
         // Launch both retrievers in parallel
         const promiseA = this.retrieverASessionId && !this.retrieverABusy
             ? this.routeToRetrieverA(retrieverPrompt, promptHash)
@@ -923,6 +1020,82 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
             this.checkSessionBudget();
         }
     }
+    /**
+     * Route an explicit learn_trigger from the MCP aidam_learn tool to the Learner agent.
+     * Unlike tool_use observations, this receives free-form context text.
+     */
+    async routeToLearnerExplicit(msg) {
+        if (!this.learnerSessionId) {
+            log("Learner not initialized, skipping learn_trigger");
+            return;
+        }
+        if (this.learnerBusy) {
+            log("Learner busy, re-queuing learn_trigger");
+            await this.db.query("UPDATE cognitive_inbox SET status = 'pending' WHERE id = $1", [msg.id]);
+            return;
+        }
+        const context = msg.payload?.context || "";
+        if (!context) {
+            log("learn_trigger: empty context, skipping");
+            return;
+        }
+        this.learnerBusy = true;
+        const learnerPrompt = `[EXPLICIT LEARNING REQUEST]
+The user/agent has flagged the following observations for learning:
+
+${context.slice(0, 6000)}
+
+Analyze this content carefully. Extract any valuable learnings, error solutions, or reusable patterns and save them to memory (check for duplicates first). If nothing worth saving, respond with SKIP.`;
+        try {
+            const response = (0, claude_agent_sdk_1.query)({
+                prompt: learnerPrompt,
+                options: {
+                    resume: this.learnerSessionId,
+                    mcpServers: this.getMcpConfig(),
+                    allowedTools: [
+                        "mcp__memory__memory_search",
+                        "mcp__memory__memory_save_learning",
+                        "mcp__memory__memory_save_error",
+                        "mcp__memory__memory_save_pattern",
+                        "mcp__memory__memory_drilldown_save",
+                        "mcp__memory__memory_drilldown_search",
+                        "mcp__memory__memory_get_project",
+                        "mcp__memory__memory_get_recent_learnings",
+                        "mcp__memory__memory_index_upsert",
+                        "mcp__memory__memory_index_search",
+                        "mcp__memory__db_select",
+                        "mcp__memory__db_execute",
+                        "Bash",
+                    ],
+                    permissionMode: "bypassPermissions",
+                    allowDangerouslySkipPermissions: true,
+                    maxTurns: 8,
+                    maxBudgetUsd: this.config.learnerBudget,
+                    cwd: this.config.cwd,
+                },
+            });
+            for await (const sdkMsg of response) {
+                if (sdkMsg.type === "result") {
+                    const resultMsg = sdkMsg;
+                    if (resultMsg.subtype === "success") {
+                        const summary = (resultMsg.result || "SKIP").slice(0, 200);
+                        log(`Learner (explicit): ${summary}, cost: $${resultMsg.total_cost_usd.toFixed(4)}`);
+                        this.recordAgentCost("learner", resultMsg.total_cost_usd);
+                    }
+                    else {
+                        log(`Learner (explicit) error: ${resultMsg.subtype}`);
+                    }
+                }
+            }
+        }
+        catch (err) {
+            log(`Learner explicit error: ${err.message}`);
+        }
+        finally {
+            this.learnerBusy = false;
+            this.checkSessionBudget();
+        }
+    }
     // ============================================
     // COMPACTOR
     // ============================================
@@ -1029,6 +1202,33 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
                                 .join("\n");
                             if (text) {
                                 allChunks.push({ text: `[CLAUDE] ${text.slice(0, 3000)}`, byteOffset });
+                            }
+                            // Extract lightweight tool metadata
+                            const toolMetas = [];
+                            for (const b of blocks) {
+                                if (b.type === "tool_use" && b.name) {
+                                    const inp = b.input || {};
+                                    let meta = b.name;
+                                    if (b.name === "Read" || b.name === "Write" || b.name === "Edit") {
+                                        meta += `(${(inp.file_path || "").slice(-80)})`;
+                                    }
+                                    else if (b.name === "Glob") {
+                                        meta += `(${inp.pattern || ""})`;
+                                    }
+                                    else if (b.name === "Grep") {
+                                        meta += `(${(inp.pattern || "").slice(0, 60)}${inp.path ? " in " + inp.path.slice(-40) : ""})`;
+                                    }
+                                    else if (b.name === "WebFetch") {
+                                        meta += `(${(inp.url || "").slice(0, 80)})`;
+                                    }
+                                    else if (b.name === "Bash") {
+                                        meta += `(${(inp.command || "").slice(0, 100)})`;
+                                    }
+                                    toolMetas.push(meta);
+                                }
+                            }
+                            if (toolMetas.length > 0) {
+                                allChunks.push({ text: `[TOOLS] ${toolMetas.join(" | ")}`, byteOffset });
                             }
                         }
                     }

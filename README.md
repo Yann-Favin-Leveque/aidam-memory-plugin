@@ -9,14 +9,15 @@ Main Session (user)
   ├── SessionStart hook → launches orchestrator + injects previous session state
   ├── UserPromptSubmit hook → command router (custom /commands → scripts)
   ├── SessionEnd hook → graceful shutdown or /clear preservation
-  └── MCP tools → aidam_retrieve, aidam_learn, aidam_deepen, aidam_usage, ...
+  └── AIDAM MCP (aidam_mcp_server.py) → aidam_retrieve, aidam_learn, aidam_deepen, aidam_create_tool, ...
 
 Orchestrator (Node.js, Agent SDK) — persists across /clear
-  ├── Retriever A — Keyword (persistent)  → FTS/fuzzy search across all tables
-  ├── Retriever B — Cascade (persistent)  → knowledge_index → domain → drill down
+  ├── Retriever A — Keyword (persistent)  → FTS/fuzzy search + transcript context (2-pass)
+  ├── Retriever B — Cascade (persistent)  → knowledge_index → domain → drill down (2-pass)
   ├── Learner (persistent)                → extracts knowledge → saves to DB + knowledge_index
   ├── Compactor (persistent)              → monitors transcript size → writes session summaries
-  └── Curator (scheduled)                 → merges duplicates, archives stale, detects contradictions
+  ├── Curator (scheduled)                 → merges duplicates, archives stale, detects contradictions
+  └── Memory MCP (memory_mcp_server.py)   → memory_search, memory_save_*, db_select, ...
 
 Memory DB (PostgreSQL)
   ├── learnings, patterns, errors_solutions, tools  (knowledge tables)
@@ -329,7 +330,8 @@ aidam-memory-plugin/
 │   ├── compactor_system.md              # Compactor agent instructions
 │   └── curator_system.md               # Curator agent instructions
 ├── mcp/
-│   ├── memory_mcp_server.py             # MCP server (memory tools for agents + AIDAM tools)
+│   ├── aidam_mcp_server.py              # MCP server for main session (aidam_* tools only)
+│   ├── memory_mcp_server.py             # MCP server for agents (memory_* tools only)
 │   ├── memory_pg.py                     # Core memory library (weighted FTS + fuzzy)
 │   ├── session_controller.py            # MCP server for spawning/controlling Claude sessions
 │   └── schema.sql                       # Main DB schema + search functions
@@ -339,6 +341,9 @@ aidam-memory-plugin/
 │   ├── migration_v3_trigram.sql         # pg_trgm fuzzy search indexes
 │   ├── migration_v4_knowledge_index.sql # Knowledge index for cascade retrieval
 │   └── migration_v5_usage_tracking.sql  # Agent usage tracking
+├── .claude-plugin/
+│   ├── plugin.json                      # Plugin metadata
+│   └── .mcp.json                        # Exposes AIDAM MCP server to main session
 ├── config/defaults.json                 # Default configuration (agents, budgets, batch)
 ├── tools/cleanup_memory.sh              # Manual cleanup script
 ├── TEST_PLAN.md                         # Full test plan (184 tests, levels 0-39)
