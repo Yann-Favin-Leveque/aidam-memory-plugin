@@ -494,7 +494,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "with_plugin": {
                         "type": "boolean",
-                        "description": "Whether to load plugins via --plugin-dir (default: true). When true, auto-detects .claude-plugin/ in working_dir and passes --plugin-dir to the CLI. Set to false for plain sessions without hooks/skills.",
+                        "description": "Whether to load plugins via --plugin-dir (default: true). When true, auto-detects .claude-plugin/ in working_dir and passes --plugin-dir to the CLI. Set to false for plain sessions without hooks/skills. IMPORTANT: NEVER launch sessions with plugin enabled for autonomous tasks or worker sub-sessions unless the user explicitly requests it. The plugin spawns background agents that consume API budget. Use with_plugin=false by default for autonomous work, and only set true when testing the plugin itself or when the user explicitly asks for it.",
                         "default": True
                     },
                     "model": {

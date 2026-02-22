@@ -9,3 +9,7 @@ __pycache__/
 .env.*
 !.env.example
 .idea/
+
+# Runtime
+.orchestrator_*.pid
+.claude/
