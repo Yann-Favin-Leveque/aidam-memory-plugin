@@ -145,6 +145,12 @@ class Orchestrator {
   private learnerBusy: boolean = false;
   private compactorBusy: boolean = false;
   private curatorBusy: boolean = false;
+  // Lazy init: track whether each agent's init is in progress
+  private retrieverAInitPromise: Promise<void> | null = null;
+  private retrieverBInitPromise: Promise<void> | null = null;
+  private learnerInitPromise: Promise<void> | null = null;
+  private compactorInitPromise: Promise<void> | null = null;
+  private curatorInitPromise: Promise<void> | null = null;
   private lastCompactedSize: number = 0;
   private compactorVersion: number = 0;
   private totalCostUsd: number = 0;
@@ -253,30 +259,15 @@ class Orchestrator {
       [this.config.sessionId, process.pid, this.config.parentPid, this.config.retrieverEnabled, this.config.learnerEnabled]
     );
 
-    // Initialize sessions
-    const initPromises: Promise<void>[] = [];
-    if (this.config.retrieverEnabled) {
-      initPromises.push(this.initRetrieverA());
-      initPromises.push(this.initRetrieverB());
-    }
-    if (this.config.learnerEnabled) {
-      initPromises.push(this.initLearner());
-    }
-    if (this.config.compactorEnabled) {
-      initPromises.push(this.initCompactor());
-    }
-    if (this.config.curatorEnabled) {
-      initPromises.push(this.initCurator());
-    }
-    await Promise.all(initPromises);
+    // Lazy init: agent sessions are created on first use, not at startup.
+    // This saves ~$0.08 per session launch.
 
-    // Mark as running
+    // Mark as running (agent session IDs will be updated on first heartbeat after lazy init)
     await this.db.query(
       `UPDATE orchestrator_state SET status = 'running',
-         retriever_session_id = $2, learner_session_id = $3,
          last_heartbeat_at = CURRENT_TIMESTAMP
        WHERE session_id = $1`,
-      [this.config.sessionId, this.retrieverASessionId || this.retrieverBSessionId || null, this.learnerSessionId || null]
+      [this.config.sessionId]
     );
 
     this.running = true;
@@ -297,7 +288,8 @@ class Orchestrator {
       this.shutdown();
     });
 
-    log(`Orchestrator running. RetrieverA: ${this.retrieverASessionId || "disabled"}, RetrieverB: ${this.retrieverBSessionId || "disabled"}, Learner: ${this.learnerSessionId || "disabled"}, Compactor: ${this.compactorSessionId || "disabled"}, Curator: ${this.curatorSessionId || "disabled"}`);
+    const agentStatus = (name: string, enabled: boolean) => enabled ? "lazy" : "disabled";
+    log(`Orchestrator running (lazy init). RetrieverA: ${agentStatus("retriever_a", this.config.retrieverEnabled)}, RetrieverB: ${agentStatus("retriever_b", this.config.retrieverEnabled)}, Learner: ${agentStatus("learner", this.config.learnerEnabled)}, Compactor: ${agentStatus("compactor", this.config.compactorEnabled)}, Curator: ${agentStatus("curator", this.config.curatorEnabled)}`);
   }
 
   private getMcpConfig() {
@@ -339,6 +331,50 @@ class Orchestrator {
       "mcp__memory__memory_index_search",
       "mcp__memory__memory_index_domains",
     ];
+  }
+
+  // ============================================
+  // LAZY INIT — ensure agent session exists before first use
+  // ============================================
+
+  private async ensureRetrieverA(): Promise<void> {
+    if (this.retrieverASessionId) return;
+    if (this.retrieverAInitPromise) { await this.retrieverAInitPromise; return; }
+    this.retrieverAInitPromise = this.initRetrieverA();
+    await this.retrieverAInitPromise;
+    this.retrieverAInitPromise = null;
+  }
+
+  private async ensureRetrieverB(): Promise<void> {
+    if (this.retrieverBSessionId) return;
+    if (this.retrieverBInitPromise) { await this.retrieverBInitPromise; return; }
+    this.retrieverBInitPromise = this.initRetrieverB();
+    await this.retrieverBInitPromise;
+    this.retrieverBInitPromise = null;
+  }
+
+  private async ensureLearner(): Promise<void> {
+    if (this.learnerSessionId) return;
+    if (this.learnerInitPromise) { await this.learnerInitPromise; return; }
+    this.learnerInitPromise = this.initLearner();
+    await this.learnerInitPromise;
+    this.learnerInitPromise = null;
+  }
+
+  private async ensureCompactor(): Promise<void> {
+    if (this.compactorSessionId) return;
+    if (this.compactorInitPromise) { await this.compactorInitPromise; return; }
+    this.compactorInitPromise = this.initCompactor();
+    await this.compactorInitPromise;
+    this.compactorInitPromise = null;
+  }
+
+  private async ensureCurator(): Promise<void> {
+    if (this.curatorSessionId) return;
+    if (this.curatorInitPromise) { await this.curatorInitPromise; return; }
+    this.curatorInitPromise = this.initCurator();
+    await this.curatorInitPromise;
+    this.curatorInitPromise = null;
   }
 
   private async initRetrieverA(): Promise<void> {
@@ -595,7 +631,7 @@ class Orchestrator {
           await this.runCurator();
           await this.markCompleted(msg.id);
         } else if (msg.message_type === "compactor_trigger") {
-          if (this.compactorSessionId && this.config.transcriptPath) {
+          if (this.config.compactorEnabled && this.config.transcriptPath) {
             log("Compactor triggered on-demand (smart-compact)");
             const stat = fs.statSync(this.config.transcriptPath);
             await this.runCompactor(this.config.transcriptPath, Math.floor(stat.size / 6));
@@ -749,6 +785,12 @@ INSTRUCTIONS: Search memory for this query. Two passes:
 1. PRIORITY — search for exactly what the explicit query asks for. Send results immediately.
 2. BONUS — look at the conversation transcript. Do you know other useful things based on what the user is working on? If yes, add them.
 If nothing relevant at all, respond with SKIP.`;
+
+    // Lazy init: ensure both retrievers are initialized (in parallel)
+    await Promise.all([
+      this.config.retrieverEnabled ? this.ensureRetrieverA() : Promise.resolve(),
+      this.config.retrieverEnabled ? this.ensureRetrieverB() : Promise.resolve(),
+    ]);
 
     // Launch both retrievers in parallel
     const promiseA = this.retrieverASessionId && !this.retrieverABusy
@@ -955,6 +997,9 @@ Check what's already covered. Focus on COMPLEMENTARY information or respond SKIP
   private async flushLearnerBatch(): Promise<void> {
     if (this.learnerBuffer.length === 0) return;
 
+    // Lazy init learner on first use
+    await this.ensureLearner();
+
     if (this.learnerBusy) {
       // Re-queue all buffered messages for next poll
       for (const msg of this.learnerBuffer) {
@@ -1055,6 +1100,8 @@ Analyze ALL observations together. Look for patterns BETWEEN them. For each obse
   }
 
   private async routeToLearner(msg: CognitiveMessage): Promise<void> {
+    // Lazy init learner on first use
+    await this.ensureLearner();
     if (!this.learnerSessionId) return;
     if (this.learnerBusy) {
       log("Learner busy, queuing will retry on next poll");
@@ -1131,8 +1178,10 @@ Analyze this tool call. If it contains a valuable learning, error solution, or r
    * Unlike tool_use observations, this receives free-form context text.
    */
   private async routeToLearnerExplicit(msg: CognitiveMessage): Promise<void> {
+    // Lazy init learner on first use
+    await this.ensureLearner();
     if (!this.learnerSessionId) {
-      log("Learner not initialized, skipping learn_trigger");
+      log("Learner init failed, skipping learn_trigger");
       return;
     }
     if (this.learnerBusy) {
@@ -1250,7 +1299,7 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
   private startCompactorMonitor(): void {
     // Check transcript size periodically
     this.compactorTimer = setInterval(async () => {
-      if (!this.running || this.compactorBusy || !this.compactorSessionId) return;
+      if (!this.running || this.compactorBusy) return;
       try {
         await this.checkAndRunCompactor();
       } catch (err: any) {
@@ -1292,6 +1341,8 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
   }
 
   private async runCompactor(transcriptPath: string, currentTokenEstimate: number, tokensSinceLastCompact: number = 40000): Promise<void> {
+    // Lazy init compactor on first use
+    await this.ensureCompactor();
     if (!this.compactorSessionId) return;
     this.compactorBusy = true;
 
@@ -1537,7 +1588,7 @@ Build the initial session state document from this conversation.`;
   private startCuratorSchedule(): void {
     this.lastCuratorRun = Date.now();
     this.curatorTimer = setInterval(async () => {
-      if (!this.running || this.curatorBusy || !this.curatorSessionId) return;
+      if (!this.running || this.curatorBusy) return;
       const elapsed = Date.now() - this.lastCuratorRun;
       if (elapsed >= this.config.curatorIntervalMs) {
         await this.runCurator();
@@ -1546,6 +1597,8 @@ Build the initial session state document from this conversation.`;
   }
 
   private async runCurator(): Promise<void> {
+    // Lazy init curator on first use
+    await this.ensureCurator();
     if (!this.curatorSessionId || this.curatorBusy) return;
     this.curatorBusy = true;
     this.lastCuratorRun = Date.now();
@@ -1628,7 +1681,7 @@ Be efficient. If the database is clean, report "No actions needed".`;
     await this.flushLearnerBatch();
 
     // 2. Run a final compactor on the old transcript (if compactor enabled and transcript exists)
-    if (this.compactorSessionId && this.config.transcriptPath) {
+    if (this.config.compactorEnabled && this.config.transcriptPath) {
       try {
         const stat = fs.statSync(this.config.transcriptPath);
         const estimatedTokens = Math.floor(stat.size / 6);
