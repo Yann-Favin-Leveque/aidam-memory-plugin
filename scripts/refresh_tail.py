@@ -102,7 +102,7 @@ def extract_tail_from_transcript(transcript_path, max_tail_chars=80000):
                                 if isinstance(b, dict) and b.get('type') == 'tool_use' and b.get('name'):
                                     inp = b.get('input', {})
                                     # Detect plan Write — keep full plan content
-                                    if b['name'] == 'Write' and '.claude/plans/' in (inp.get('file_path', '') or ''):
+                                    if b['name'] == 'Write' and '.claude/plans/' in (inp.get('file_path', '') or '').replace('\\', '/'):
                                         plan_path = (inp.get('file_path', '') or '').replace('\\', '/').split('/')[-1] or 'plan.md'
                                         plan_content = (inp.get('content', '') or '')[:5000]
                                         if last_plan_chunk_index >= 0:

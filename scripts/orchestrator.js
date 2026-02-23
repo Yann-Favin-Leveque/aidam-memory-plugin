@@ -1293,7 +1293,7 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
                                 if (b.type === "tool_use" && b.name) {
                                     const inp = b.input || {};
                                     // Detect plan Write — keep full plan content instead of just metadata
-                                    if (b.name === "Write" && (inp.file_path || "").includes(".claude/plans/")) {
+                                    if (b.name === "Write" && (inp.file_path || "").replace(/\\/g, "/").includes(".claude/plans/")) {
                                         const planPath = (inp.file_path || "").split(/[/\\]/).pop() || "plan.md";
                                         const planContent = (inp.content || "").slice(0, 5000);
                                         // Remove previous plan chunk if exists (keep only the last)

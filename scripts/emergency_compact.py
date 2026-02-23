@@ -85,7 +85,7 @@ def extract_state_from_transcript(transcript_path):
                                     tool_calls.append(b.get('name', 'unknown'))
                                     # Detect plan Write — keep full plan content
                                     inp = b.get('input', {}) or {}
-                                    if b.get('name') == 'Write' and '.claude/plans/' in (inp.get('file_path', '') or ''):
+                                    if b.get('name') == 'Write' and '.claude/plans/' in (inp.get('file_path', '') or '').replace('\\', '/'):
                                         plan_path = (inp.get('file_path', '') or '').replace('\\', '/').split('/')[-1] or 'plan.md'
                                         plan_content = (inp.get('content', '') or '')[:5000]
                                         if last_plan_chunk_index >= 0:
