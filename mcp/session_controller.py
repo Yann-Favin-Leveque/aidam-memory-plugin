@@ -178,20 +178,19 @@ MAX_CHARS_LIMIT = 20000
 
 
 def _get_new_output(session_id: str, max_chars: int = DEFAULT_MAX_CHARS, offset: int = 0) -> dict:
-    """Get output produced since the last read marker, with truncation.
+    """Read session output. Always reads from the full buffer (no stateful cursor).
 
-    Returns dict with output text + pagination info.
+    By default returns the LAST max_chars (most recent output).
+    Use offset to paginate from the beginning.
     """
     sess = sessions.get(session_id)
     if not sess:
         return {"text": "", "total_chars": 0, "truncated": False}
 
     with sess["lock"]:
-        read_pos = sess.get("read_pos", 0)
-        raw_new = sess["buffer"][read_pos:]
-        sess["read_pos"] = len(sess["buffer"])
+        raw = sess["buffer"]
 
-    cleaned = strip_ansi(raw_new)
+    cleaned = strip_ansi(raw)
     total_chars = len(cleaned)
 
     # Apply max_chars cap
@@ -264,7 +263,6 @@ def do_session_start(working_dir: str, with_plugin: bool = True, model: str = No
         "lock": threading.Lock(),
         "alive": True,
         "last_data_time": time.time(),
-        "read_pos": 0,
         "messages_sent": 0,
         "working_dir": working_dir,
         "with_plugin": with_plugin,
@@ -285,7 +283,6 @@ def do_session_start(working_dir: str, with_plugin: bool = True, model: str = No
 
     if wait:
         startup_output = _wait_for_idle(session_id, idle_threshold=5.0, timeout=30.0)
-        sess["read_pos"] = len(sess["buffer"])
         result["output"] = startup_output[:2000] if startup_output else "(no output yet)"
 
     return result
@@ -329,7 +326,6 @@ def do_session_send(session_id: str, message: str, timeout: float = 180.0, wait:
 
     if wait:
         response = _wait_for_idle(session_id, idle_threshold=4.0, timeout=timeout)
-        sess["read_pos"] = len(sess["buffer"])
 
         # Try to remove the echo of our own message
         lines = response.split('\n')
@@ -396,7 +392,6 @@ def do_session_send_keys(session_id: str, keys: list, timeout: float = 30.0, wai
 
     if wait:
         response = _wait_for_idle(session_id, idle_threshold=4.0, timeout=timeout)
-        sess["read_pos"] = len(sess["buffer"])
 
         # Truncate if requested
         if max_response_chars > 0 and len(response) > max_response_chars:
@@ -446,14 +441,12 @@ def do_session_status(session_id: str) -> dict:
     with sess["lock"]:
         buf_len = len(sess["buffer"])
         idle_seconds = time.time() - sess["last_data_time"]
-        unread = buf_len - sess.get("read_pos", 0)
 
     return {
         "session_id": session_id,
         "alive": sess["alive"],
         "messages_sent": sess["messages_sent"],
         "buffer_size": buf_len,
-        "unread_chars": unread,
         "idle_seconds": round(idle_seconds, 1),
         "working_dir": sess["working_dir"],
         "uptime_seconds": round(time.time() - sess["created_at"], 1),
