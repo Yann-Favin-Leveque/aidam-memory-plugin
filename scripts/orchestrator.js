@@ -1251,6 +1251,7 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
             // Extract ALL user/assistant messages from the transcript
             const allChunks = [];
             let byteOffset = 0;
+            let lastPlanChunkIndex = -1; // Track index of last plan Write to keep only the most recent
             for (let i = 0; i < lines.length; i++) {
                 const lineBytes = lines[i].length + 1;
                 try {
@@ -1291,6 +1292,22 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
                             for (const b of blocks) {
                                 if (b.type === "tool_use" && b.name) {
                                     const inp = b.input || {};
+                                    // Detect plan Write — keep full plan content instead of just metadata
+                                    if (b.name === "Write" && (inp.file_path || "").includes(".claude/plans/")) {
+                                        const planPath = (inp.file_path || "").split(/[/\\]/).pop() || "plan.md";
+                                        const planContent = (inp.content || "").slice(0, 5000);
+                                        // Remove previous plan chunk if exists (keep only the last)
+                                        if (lastPlanChunkIndex >= 0) {
+                                            allChunks.splice(lastPlanChunkIndex, 1);
+                                            // Adjust index since we removed an element
+                                            lastPlanChunkIndex = allChunks.length;
+                                        }
+                                        else {
+                                            lastPlanChunkIndex = allChunks.length;
+                                        }
+                                        allChunks.push({ text: `[ACTIVE_PLAN: ${planPath}]\n${planContent}`, byteOffset });
+                                        continue;
+                                    }
                                     let meta = b.name;
                                     if (b.name === "Read" || b.name === "Write" || b.name === "Edit") {
                                         meta += `(${(inp.file_path || "").slice(-80)})`;

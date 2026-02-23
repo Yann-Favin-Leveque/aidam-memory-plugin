@@ -52,6 +52,7 @@ def extract_state_from_transcript(transcript_path):
     all_messages = []
     user_messages = []
     tool_calls = []
+    last_plan_chunk_index = -1  # Track index of last plan Write to keep only the most recent
 
     try:
         with open(transcript_path, 'r', encoding='utf-8') as f:
@@ -82,6 +83,17 @@ def extract_state_from_transcript(transcript_path):
                                     all_messages.append(f"[CLAUDE] {b['text'][:500]}")
                                 elif isinstance(b, dict) and b.get('type') == 'tool_use':
                                     tool_calls.append(b.get('name', 'unknown'))
+                                    # Detect plan Write — keep full plan content
+                                    inp = b.get('input', {}) or {}
+                                    if b.get('name') == 'Write' and '.claude/plans/' in (inp.get('file_path', '') or ''):
+                                        plan_path = (inp.get('file_path', '') or '').replace('\\', '/').split('/')[-1] or 'plan.md'
+                                        plan_content = (inp.get('content', '') or '')[:5000]
+                                        if last_plan_chunk_index >= 0:
+                                            all_messages.pop(last_plan_chunk_index)
+                                            last_plan_chunk_index = len(all_messages)
+                                        else:
+                                            last_plan_chunk_index = len(all_messages)
+                                        all_messages.append(f"[ACTIVE_PLAN: {plan_path}]\n{plan_content}")
                 except (json.JSONDecodeError, KeyError):
                     continue
     except Exception as e:

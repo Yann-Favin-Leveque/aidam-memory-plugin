@@ -60,6 +60,7 @@ def extract_tail_from_transcript(transcript_path, max_tail_chars=80000):
     - [TOOLS] for tool_use metadata
     """
     all_chunks = []
+    last_plan_chunk_index = -1  # Track index of last plan Write to keep only the most recent
 
     try:
         with open(transcript_path, 'r', encoding='utf-8') as f:
@@ -100,6 +101,17 @@ def extract_tail_from_transcript(transcript_path, max_tail_chars=80000):
                             for b in blocks:
                                 if isinstance(b, dict) and b.get('type') == 'tool_use' and b.get('name'):
                                     inp = b.get('input', {})
+                                    # Detect plan Write — keep full plan content
+                                    if b['name'] == 'Write' and '.claude/plans/' in (inp.get('file_path', '') or ''):
+                                        plan_path = (inp.get('file_path', '') or '').replace('\\', '/').split('/')[-1] or 'plan.md'
+                                        plan_content = (inp.get('content', '') or '')[:5000]
+                                        if last_plan_chunk_index >= 0:
+                                            all_chunks.pop(last_plan_chunk_index)
+                                            last_plan_chunk_index = len(all_chunks)
+                                        else:
+                                            last_plan_chunk_index = len(all_chunks)
+                                        all_chunks.append(f"[ACTIVE_PLAN: {plan_path}]\n{plan_content}")
+                                        continue
                                     meta = b['name']
                                     if b['name'] in ('Read', 'Write', 'Edit'):
                                         meta += f"({(inp.get('file_path','') or '')[-80:]})"

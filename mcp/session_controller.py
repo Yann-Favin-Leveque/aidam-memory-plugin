@@ -291,8 +291,13 @@ def do_session_start(working_dir: str, with_plugin: bool = True, model: str = No
     return result
 
 
-def do_session_send(session_id: str, message: str, timeout: float = 180.0, wait: bool = True) -> dict:
-    """Send a message to the Claude subprocess. If wait=True, block until response. If wait=False, return immediately."""
+def do_session_send(session_id: str, message: str, timeout: float = 180.0, wait: bool = True, max_response_chars: int = 0) -> dict:
+    """Send a message to the Claude subprocess. If wait=True, block until response. If wait=False, return immediately.
+
+    Args:
+        max_response_chars: Truncate the response to this many chars (0=no limit).
+            When truncated, keeps the LAST N chars (most recent output is most useful).
+    """
     sess = sessions.get(session_id)
     if not sess:
         return {"error": f"Session not found: {session_id}"}
@@ -336,13 +341,26 @@ def do_session_send(session_id: str, message: str, timeout: float = 180.0, wait:
                 continue
             cleaned_lines.append(line)
         cleaned = '\n'.join(cleaned_lines).strip()
-        result["response"] = cleaned if cleaned else response
+        response_text = cleaned if cleaned else response
+
+        # Truncate if requested
+        if max_response_chars > 0 and len(response_text) > max_response_chars:
+            result["response"] = response_text[-max_response_chars:]
+            result["response_truncated"] = True
+            result["response_total_chars"] = len(response_text)
+        else:
+            result["response"] = response_text
 
     return result
 
 
-def do_session_send_keys(session_id: str, keys: list, timeout: float = 30.0, wait: bool = True) -> dict:
-    """Send special keys to the session. If wait=True, block until idle. If wait=False, return immediately."""
+def do_session_send_keys(session_id: str, keys: list, timeout: float = 30.0, wait: bool = True, max_response_chars: int = 0) -> dict:
+    """Send special keys to the session. If wait=True, block until idle. If wait=False, return immediately.
+
+    Args:
+        max_response_chars: Truncate the response to this many chars (0=no limit).
+            When truncated, keeps the LAST N chars (most recent output is most useful).
+    """
     sess = sessions.get(session_id)
     if not sess:
         return {"error": f"Session not found: {session_id}"}
@@ -379,7 +397,14 @@ def do_session_send_keys(session_id: str, keys: list, timeout: float = 30.0, wai
     if wait:
         response = _wait_for_idle(session_id, idle_threshold=4.0, timeout=timeout)
         sess["read_pos"] = len(sess["buffer"])
-        result["response"] = response
+
+        # Truncate if requested
+        if max_response_chars > 0 and len(response) > max_response_chars:
+            result["response"] = response[-max_response_chars:]
+            result["response_truncated"] = True
+            result["response_total_chars"] = len(response)
+        else:
+            result["response"] = response
 
     return result
 
@@ -542,6 +567,11 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "If true (default), wait for Claude to finish responding. If false, send and return immediately — use session_read later to get the response.",
                         "default": True
+                    },
+                    "max_response_chars": {
+                        "type": "integer",
+                        "description": "Max chars to return from the response (0=no limit). When truncated, keeps the LAST N chars (most recent output). Use session_read with offset to paginate if needed.",
+                        "default": 0
                     }
                 },
                 "required": ["session_id", "message"]
@@ -581,6 +611,11 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "If true (default), wait for response. If false, return immediately.",
                         "default": True
+                    },
+                    "max_response_chars": {
+                        "type": "integer",
+                        "description": "Max chars to return from the response (0=no limit). When truncated, keeps the LAST N chars (most recent output). Use session_read with offset to paginate if needed.",
+                        "default": 0
                     }
                 },
                 "required": ["session_id", "keys"]
@@ -663,6 +698,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 message=arguments["message"],
                 timeout=arguments.get("timeout", 180),
                 wait=arguments.get("wait", True),
+                max_response_chars=arguments.get("max_response_chars", 0),
             )
         elif name == "session_send_keys":
             result = do_session_send_keys(
@@ -670,6 +706,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 keys=arguments["keys"],
                 timeout=arguments.get("timeout", 30),
                 wait=arguments.get("wait", True),
+                max_response_chars=arguments.get("max_response_chars", 0),
             )
         elif name == "session_read":
             result = do_session_read(
