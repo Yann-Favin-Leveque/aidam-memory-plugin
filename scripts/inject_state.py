@@ -169,9 +169,9 @@ def main():
                 with open(raw_tail_path, 'r', encoding='utf-8') as f:
                     raw_tail = f.read()
                 if raw_tail:
-                    # Filter out [TOOLS] lines to maximize user/claude content
+                    # Filter out tool metadata lines to maximize user/claude content
                     lines = raw_tail.split('\n')
-                    lines = [l for l in lines if not l.startswith('[TOOLS]')]
+                    lines = [l for l in lines if not l.startswith('[TOOLS]') and not l.startswith('[TOOL_RESULTS]')]
                     raw_tail = '\n'.join(lines)
                     # Truncate from the beginning to keep the most recent
                     if len(raw_tail) > remaining:

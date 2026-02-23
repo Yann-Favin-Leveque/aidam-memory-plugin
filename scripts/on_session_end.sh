@@ -60,13 +60,20 @@ if [ "$REASON" = "clear" ]; then
       2>/dev/null || true
   fi
 
-  # Emergency compact if no session_state exists yet
+  # Check if session_state exists
   HAS_STATE=$("$PSQL" -U postgres -h localhost -d claude_memory -t -A -c \
     "SELECT COUNT(*) FROM session_state WHERE session_id='${SESSION_ID}';" \
     2>/dev/null || echo "0")
 
-  if [ "$HAS_STATE" = "0" ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    "$PYTHON" "$(dirname "$0")/emergency_compact.py" "$SESSION_ID" "$TRANSCRIPT_PATH" 2>/dev/null || true
+  if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    if [ "$HAS_STATE" = "0" ]; then
+      # No session_state at all — emergency compact (creates state + tail)
+      "$PYTHON" "$(dirname "$0")/emergency_compact.py" "$SESSION_ID" "$TRANSCRIPT_PATH" 2>/dev/null || true
+    else
+      # Session_state exists but tail may be stale (from last compactor run).
+      # Refresh the tail from the FULL transcript so inject_state gets the most recent content.
+      "$PYTHON" "$(dirname "$0")/refresh_tail.py" "$SESSION_ID" "$TRANSCRIPT_PATH" 2>/dev/null || true
+    fi
   fi
 
   # Do NOT kill the orchestrator — it will be reused via session_reset

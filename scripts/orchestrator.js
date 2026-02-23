@@ -1256,10 +1256,25 @@ Analyze this content carefully. Extract any valuable learnings, error solutions,
                 try {
                     const entry = JSON.parse(lines[i]);
                     if (entry.type === "user" && entry.message?.content) {
-                        const content = typeof entry.message.content === "string"
-                            ? entry.message.content
-                            : JSON.stringify(entry.message.content);
-                        allChunks.push({ text: `[USER] ${content.slice(0, 3000)}`, byteOffset });
+                        const content = entry.message.content;
+                        if (typeof content === "string") {
+                            // Real user message — keep full text (up to 3000 chars)
+                            allChunks.push({ text: `[USER] ${content.slice(0, 3000)}`, byteOffset });
+                        }
+                        else if (Array.isArray(content)) {
+                            // Tool results array — extract lightweight summaries only
+                            const toolResults = [];
+                            for (const item of content) {
+                                if (item?.type === "tool_result") {
+                                    const resultContent = typeof item.content === "string" ? item.content : "";
+                                    const preview = resultContent.slice(0, 150).replace(/\n/g, " ");
+                                    toolResults.push(`${item.tool_use_id?.slice(-8) || "?"}: ${preview}`);
+                                }
+                            }
+                            if (toolResults.length > 0) {
+                                allChunks.push({ text: `[TOOL_RESULTS] ${toolResults.join(" | ").slice(0, 500)}`, byteOffset });
+                            }
+                        }
                     }
                     else if (entry.type === "assistant" && entry.message?.content) {
                         const blocks = entry.message.content;

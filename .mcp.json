@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aidam": {
+      "command": "C:/Users/user/AppData/Local/Programs/Python/Python312/python.exe",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/aidam_mcp_server.py"],
+      "env": {
+        "PGPASSWORD": "${PGPASSWORD}"
+      }
+    }
+  }
+}

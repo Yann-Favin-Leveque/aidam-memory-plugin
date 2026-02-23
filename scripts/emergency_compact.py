@@ -64,6 +64,16 @@ def extract_state_from_transcript(transcript_path):
                             text = content[:500]
                             user_messages.append(text)
                             all_messages.append(f"[USER] {text}")
+                        elif isinstance(content, list):
+                            # Tool results array — lightweight summary only
+                            summaries = []
+                            for item in content:
+                                if isinstance(item, dict) and item.get('type') == 'tool_result':
+                                    rc = item.get('content', '')
+                                    preview = (rc[:150] if isinstance(rc, str) else '').replace('\n', ' ')
+                                    summaries.append(f"{(item.get('tool_use_id','') or '')[-8:]}: {preview}")
+                            if summaries:
+                                all_messages.append(f"[TOOL_RESULTS] {' | '.join(summaries)[:500]}")
                     elif entry.get('type') == 'assistant' and entry.get('message', {}).get('content'):
                         blocks = entry['message']['content']
                         if isinstance(blocks, list):
